@@ -1,0 +1,432 @@
+/* ── Reset & Base ──────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* ── App root (the draggable overlay card) ─────────────────────────────────── */
+#app {
+  width: 100%;
+  height: 100%;
+  opacity: 0.92;
+  transition: opacity 0.15s ease;
+}
+
+/* ── Overlay card ──────────────────────────────────────────────────────────── */
+.overlay-card {
+  width: 100%;
+  height: 100%;
+  background: rgba(20, 20, 28, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #e8e8e8;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.overlay-card:active {
+  cursor: grabbing;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────── */
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  flex-shrink: 0;
+}
+
+.plan-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 160, 0, 0.2);
+  color: #ffb347;
+  border: 1px solid rgba(255, 160, 0, 0.3);
+  text-transform: uppercase;
+}
+
+.plan-badge.free { background: rgba(100, 200, 100, 0.15); color: #7ecb7e; border-color: rgba(100, 200, 100, 0.25); }
+.plan-badge.pro  { background: rgba(100, 150, 255, 0.15); color: #88aaff; border-color: rgba(100, 150, 255, 0.25); }
+.plan-badge.max  { background: rgba(255, 160, 0, 0.2);    color: #ffb347; border-color: rgba(255, 160, 0, 0.3); }
+
+.account-name {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.status-dot.live     { background: #4caf50; box-shadow: 0 0 4px rgba(76, 175, 80, 0.6); }
+.status-dot.stale    { background: #ff9800; box-shadow: 0 0 4px rgba(255, 152, 0, 0.5); }
+.status-dot.degraded { background: #9e9e9e; }
+.status-dot.expired  { background: #f44336; }
+.status-dot.loading  { background: #607d8b; animation: pulse 1.5s ease-in-out infinite; }
+.status-dot.error    { background: #f44336; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ── Body / quota bars ─────────────────────────────────────────────────────── */
+.card-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-body::-webkit-scrollbar {
+  width: 3px;
+}
+.card-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.card-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+/* ── State messages (auth expired, loading, etc.) ──────────────────────────── */
+.state-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  text-align: center;
+  padding: 12px;
+}
+
+.state-message .icon {
+  font-size: 22px;
+  opacity: 0.6;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────────── */
+.card-footer {
+  padding: 4px 10px 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  flex-shrink: 0;
+}
+
+.extra-usage-line {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.extra-usage-line .enabled { color: #ff9800; }
+.extra-usage-line .used { color: #e8e8e8; font-weight: 600; }
+
+.stale-info {
+  font-size: 10px;
+  color: rgba(255, 152, 0, 0.7);
+  text-align: center;
+  padding-top: 2px;
+}
+
+/* ── Overusage section (footer) ────────────────────────────────────────────── */
+.overusage-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.overusage-header {
+  /* inherits .quota-bar-header flex layout */
+}
+
+/* on/off pill — mirrors plan-badge style at a smaller scale */
+.overusage-pill {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.overusage-pill.on {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ff9800;
+  border: 1px solid rgba(255, 152, 0, 0.35);
+}
+
+.overusage-pill.off {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* "limit reached" pill — danger red, shown when used_credits >= monthly_limit */
+.overusage-pill.reached {
+  background: rgba(244, 67, 54, 0.2);
+  color: #f44336;
+  border: 1px solid rgba(244, 67, 54, 0.4);
+}
+
+/* progress bar spacing inside footer (reuses .progress-track / .progress-fill) */
+.overusage-progress {
+  margin-top: 1px;
+}
+
+/* label + pill grouped on the left side of the header row */
+.overusage-label-group {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* right-aligned value group: spent / allowed with tabular numbers */
+.overusage-values {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.overusage-spent {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e8e8e8;
+}
+
+.overusage-allowed {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* muted separator between spent and allowed values */
+.overusage-sep {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.25);
+}
+
+/* mute the section only when overusage is disabled AND there is no data to show.
+   When real values are present (cap met or partially used), the section class will
+   NOT be "disabled" even if is_enabled is false — see renderOverusageSection logic. */
+.overusage-section.disabled {
+  opacity: 0.6;
+}
+
+/* ── Quota window bar (window-bar component) ───────────────────────────────── */
+.quota-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.quota-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.quota-bar-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quota-bar-label.degraded {
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.quota-bar-right {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.quota-pct {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e8e8e8;
+}
+
+.quota-countdown {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  background: linear-gradient(90deg, #4a90d9, #7c4dff);
+}
+
+.progress-fill.warn   { background: linear-gradient(90deg, #ff9800, #f44336); }
+.progress-fill.danger { background: linear-gradient(90deg, #f44336, #b71c1c); }
+.progress-fill.zero   { background: rgba(255, 255, 255, 0.15); }
+
+/* ── Context menu ──────────────────────────────────────────────────────────── */
+.context-menu {
+  position: fixed;
+  z-index: 9999;
+  background: rgba(28, 28, 38, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(16px);
+  font-size: 12px;
+  color: #e0e0e0;
+  display: none;
+  /* Safety net (issue 5c): menu can never be clipped even if the grow-then-restore
+     resize call fails — the menu scrolls internally rather than being cut off. */
+  max-height: calc(100vh - 8px);
+  overflow-y: auto;
+}
+
+.context-menu.visible {
+  display: block;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  gap: 8px;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.menu-item.disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+.menu-item.danger {
+  color: #f44336;
+}
+
+.menu-separator {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 4px 0;
+}
+
+.menu-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 6px 12px 2px;
+}
+
+.menu-submenu {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  background: rgba(28, 28, 38, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 140px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: none;
+}
+
+.menu-item:hover .menu-submenu {
+  display: block;
+}
+
+.menu-item-wrap {
+  position: relative;
+}
+
+/* ── Opacity slider ────────────────────────────────────────────────────────── */
+.opacity-slider-wrap {
+  padding: 4px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.opacity-slider-label {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+input[type="range"].opacity-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"].opacity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #7c4dff;
+  cursor: pointer;
+}
