@@ -1,0 +1,87 @@
+name: CI (Rust cache warmer)
+
+# Warms the per-OS Rust build cache on the default branch so that v* tag
+# release runs can restore a warm cache via GitHub Actions' default-branch
+# fallback rule (tag runs cannot save a cache reachable by other tags, but
+# they CAN restore a cache saved on the default branch).
+#
+# shared-key values MUST stay in sync with release.yml:
+#   Windows: release-windows
+#   macOS:   release-macos
+#
+# Path filter: only run when Rust sources, lockfiles, or this workflow change
+# to avoid spending macOS/Windows minutes on frontend-only commits.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src-tauri/**"
+      - "Cargo.lock"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  warm-rust-cache:
+    name: Warm Rust cache (${{ matrix.os }})
+    # Job-level concurrency so matrix.os resolves (it is not available at
+    # workflow level); each OS warmer cancels only its own superseded runs.
+    concurrency:
+      group: ci-${{ github.ref }}-${{ matrix.os }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rust-cache-key: release-windows
+          - os: macos-14
+            rust-cache-key: release-macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Add Rust targets for universal binary (macOS only)
+        if: matrix.os == 'macos-14'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: src-tauri -> target
+          shared-key: ${{ matrix.rust-cache-key }}
+          # save-if defaults to true — this run IS on main (the default branch),
+          # so the cache WILL be saved and will be visible to tag release runs
+          # via the default-branch fallback rule.
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend (required by tauri build)
+        run: pnpm build
+
+      - name: Build Tauri app (populates Rust target cache)
+        run: pnpm tauri build ${{ matrix.os == 'macos-14' && '--target universal-apple-darwin' || '' }}
+        # A full release build warms the most relevant cache entries.
+        # The heavy release profile (lto=true, codegen-units=1) matches what
+        # the release workflow compiles, so restored artefacts are maximally useful.
