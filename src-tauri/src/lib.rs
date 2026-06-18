@@ -77,14 +77,33 @@ pub fn run() {
 
             let _tray = tray_builder.build(app)?;
 
-            // ── Apply persisted opacity at startup ────────────────────────────
+            // ── Apply persisted settings at startup ───────────────────────────
             {
                 let saved = crate::settings::load(app.handle());
+
+                // Restore CSS opacity.
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.eval(&format!(
                         "document.getElementById('app').style.opacity = '{}'",
                         saved.opacity
                     ));
+
+                    // Restore saved window size preset.  Unknown values fall back
+                    // to the default dimensions via `preset_size`.
+                    let (w, h) = crate::window_ctl::preset_size(&saved.size_preset);
+                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                        width: w,
+                        height: h,
+                    }));
+                }
+
+                // Hydrate plan_override into the poller state BEFORE the poller
+                // is spawned so the very first poll uses the persisted override.
+                if let Some(plan) = crate::window_ctl::parse_plan_override(
+                    saved.plan_override.as_deref(),
+                ) {
+                    let mut s = poller_state.lock().unwrap();
+                    s.plan_override = Some(plan);
                 }
             }
 

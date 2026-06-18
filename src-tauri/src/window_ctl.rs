@@ -78,20 +78,40 @@ pub async fn set_window_size(app: AppHandle, width: f64, height: f64) -> Result<
         .map_err(|e| e.to_string())
 }
 
-/// Apply a size preset to the window.
-#[tauri::command]
-pub async fn set_size_preset(app: AppHandle, preset: String) -> Result<(), String> {
-    let (w, h) = match preset.as_str() {
+/// Resolve a preset name to `(width, height)` in logical pixels.
+///
+/// Unknown preset names fall back to the default dimensions so callers never
+/// need to special-case an invalid stored value.
+pub fn preset_size(preset: &str) -> (f64, f64) {
+    match preset {
         "small" => (WINDOW_SMALL_WIDTH, WINDOW_SMALL_HEIGHT),
         "medium" => (WINDOW_MEDIUM_WIDTH, WINDOW_MEDIUM_HEIGHT),
         "large" => (WINDOW_LARGE_WIDTH, WINDOW_LARGE_HEIGHT),
         _ => (WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT),
-    };
+    }
+}
+
+/// Apply a size preset to the window, then persist the choice to settings.
+///
+/// Persistence is best-effort: a write failure is logged but does **not** cause
+/// the command to fail, because the live resize already succeeded.
+#[tauri::command]
+pub async fn set_size_preset(app: AppHandle, preset: String) -> Result<(), String> {
+    let (w, h) = preset_size(&preset);
 
     let window = main_window(&app).ok_or("Main window not found")?;
     window
         .set_size(tauri::Size::Logical(tauri::LogicalSize { width: w, height: h }))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Persist the chosen preset so it survives a restart.
+    let mut s = settings::load(&app);
+    s.size_preset = preset;
+    if let Err(e) = settings::save(&app, &s) {
+        log::warn!("Failed to save size_preset setting: {e}");
+    }
+
+    Ok(())
 }
 
 /// Toggle always-on-top state.
@@ -115,23 +135,61 @@ pub async fn toggle_visibility(app: AppHandle) -> Result<(), String> {
     }
 }
 
-/// Set a plan override in the poller state (user picks from context menu).
-#[tauri::command]
-pub async fn set_plan_override(
-    _app: AppHandle,
-    plan: Option<String>,
-    state: tauri::State<'_, SharedPollerState>,
-) -> Result<(), String> {
-    let plan = match plan.as_deref() {
+/// Map an optional plan string to a `Plan` enum value.
+///
+/// `None`, `Some("auto")`, or any unrecognised string maps to `None` (auto-detect).
+/// This helper is shared by `set_plan_override` and the startup hydration in `lib.rs`.
+pub fn parse_plan_override(plan: Option<&str>) -> Option<Plan> {
+    match plan {
         Some("free") => Some(Plan::Free),
         Some("pro") => Some(Plan::Pro),
         Some("max5x") => Some(Plan::Max5x),
         Some("max20x") => Some(Plan::Max20x),
         Some("max") => Some(Plan::Max),
-        _ => None, // "auto" or unknown → clear override
+        _ => None, // None, "auto", or any unknown string → clear override
+    }
+}
+
+/// Set a plan override in the poller state (user picks from context menu or settings panel),
+/// and persist the choice to settings.
+///
+/// `plan` is `None` (or `"auto"`) to clear the override.
+/// Persistence is best-effort: a write failure is logged but does not fail the command.
+///
+/// Unlike `request_refresh`, this always wakes the poller regardless of rate-limit state:
+/// the override itself is the data that changed, and the next snapshot must reflect it
+/// promptly without waiting up to `current_interval` seconds.
+#[tauri::command]
+pub async fn set_plan_override(
+    app: AppHandle,
+    plan: Option<String>,
+    state: tauri::State<'_, SharedPollerState>,
+    notify: tauri::State<'_, RefreshNotify>,
+) -> Result<(), String> {
+    // Update live poller state and set the refresh flag while holding the lock,
+    // so the woken loop always sees the new plan_override before it runs.
+    let parsed = parse_plan_override(plan.as_deref());
+    {
+        let mut s = state.lock().unwrap();
+        s.plan_override = parsed;
+        s.refresh_requested = true;
+    }
+
+    // Wake the poller immediately.  The refresh_requested flag bypasses both
+    // the idle-pause check (line ~129 in poller.rs) and the rate-limit backoff
+    // check (line ~141), so the new snapshot is emitted even during backoff.
+    notify.notify_one();
+
+    // Persist the raw string (or None) so it survives a restart.
+    let mut cfg = settings::load(&app);
+    cfg.plan_override = match plan.as_deref() {
+        Some("auto") | None => None,
+        Some(s) => Some(s.to_string()),
     };
-    let mut s = state.lock().unwrap();
-    s.plan_override = plan;
+    if let Err(e) = settings::save(&app, &cfg) {
+        log::warn!("Failed to save plan_override setting: {e}");
+    }
+
     Ok(())
 }
 

@@ -1,8 +1,18 @@
-name: Release (macOS)
+name: Release (Windows)
 
-# Builds a universal (Apple Silicon + Intel) macOS .app/.dmg and publishes it
+# Builds Windows NSIS (.exe) and WiX MSI (.msi) installers and publishes them
 # to a GitHub Release. Triggered by pushing a version tag (e.g. v0.1.0), or
 # run manually from the Actions tab to produce a draft release.
+#
+# SHARED-DRAFT BEHAVIOUR: This workflow and release-macos.yml both trigger on
+# the same v* tag and both call tauri-action with the same tagName expression
+# and releaseDraft: true. tauri-action finds-or-creates a draft release by tag,
+# so whichever job runs first creates the draft and the other appends its assets
+# to it. There is a known race on the initial releaseBody write (both workflows
+# carry a body and the "winner" sets it). The user accepted this trade-off in
+# favour of keeping release-macos.yml untouched (Option B topology). The bodies
+# are written to be consistent: both contain the full OS-sectioned Downloads
+# table so the release is useful regardless of which workflow won the race.
 on:
   push:
     tags:
@@ -15,15 +25,15 @@ permissions:
 
 # Cancel an in-progress run if a newer one supersedes it for the same ref.
 concurrency:
-  group: release-macos-${{ github.ref }}
+  group: release-windows-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-macos:
-    name: Build universal macOS bundle
-    runs-on: macos-14 # Apple Silicon runner; cross-builds the x86_64 slice too
+  build-windows:
+    name: Build Windows installers
+    runs-on: windows-latest
     permissions:
-      contents: write # required to create the Release and upload the .dmg
+      contents: write # required to create the Release and upload installers
 
     steps:
       - name: Checkout
@@ -39,8 +49,9 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Add Rust targets for universal binary
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      # No extra Rust targets needed on Windows — the default host target
+      # (x86_64-pc-windows-msvc) is what we want. bundle.targets "all" in
+      # tauri.conf.json produces both NSIS (*_x64-setup.exe) and WiX (*.msi).
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -85,4 +96,5 @@ jobs:
             Requires macOS 11.0 (Big Sur) or later.
           releaseDraft: true
           prerelease: false
-          args: --target universal-apple-darwin
+          # No --target flag needed; the default host target produces the
+          # correct x64 Windows bundles via bundle.targets "all".

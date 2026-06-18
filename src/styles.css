@@ -430,3 +430,319 @@ input[type="range"].opacity-slider::-webkit-slider-thumb {
   background: #7c4dff;
   cursor: pointer;
 }
+
+/* ── Header icon buttons + right cluster ────────────────────────────────────── */
+
+/*
+ * Wrapper for [status-dot][refresh-btn][settings-btn] — sits at the far right
+ * of .card-header. The status-dot's old `margin-left:auto` moves here so the
+ * account-name keeps `flex:1` and this cluster hugs the right edge as a unit.
+ */
+.header-right-cluster {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/*
+ * Remove the auto-margin that previously pushed the dot right on its own —
+ * that responsibility now lives on .header-right-cluster.
+ */
+.header-right-cluster .status-dot {
+  margin-left: 0;
+}
+
+/*
+ * Small transparent icon button for the header row.
+ * Hit area: ~22px × 22px via padding; the inline SVG is 14px.
+ * Color inherits so the SVG path/stroke uses currentColor.
+ */
+.header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s ease, color 0.1s ease;
+  /* Ensure drag-to-move ignores this element */
+  -webkit-app-region: no-drag;
+}
+
+.header-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.header-icon-btn:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* Inline SVG inherits color via currentColor; size capped at 14×14 px */
+.header-icon-btn svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Rate-limited / logically disabled state — dimmed, no hover, default cursor */
+.header-icon-btn.disabled {
+  color: rgba(255, 255, 255, 0.2);
+  cursor: default;
+  pointer-events: none;
+}
+
+.header-icon-btn.disabled:hover {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Settings panel (full-window overlay view) ──────────────────────────────── */
+
+/*
+ * The settings panel root. Absolutely positioned so it covers #app entirely,
+ * sitting above the overlay card. Hidden by default; `.visible` reveals it.
+ * Matches the card's background so it blends seamlessly with the window shape.
+ */
+#settings-root.settings-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(20, 20, 28, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  /* Inherit the backdrop-filter from the card so the transparent aesthetic stays */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #e8e8e8;
+}
+
+#settings-root.settings-panel.visible {
+  display: flex;
+}
+
+/*
+ * Inner container: flex column, scrollable safety net.
+ * overflow-y:auto guarantees no content clips even if the grow-resize fails.
+ */
+.settings-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 10px 10px;
+  gap: 10px;
+}
+
+/* Slim scrollbar consistent with .card-body */
+.settings-view::-webkit-scrollbar {
+  width: 3px;
+}
+.settings-view::-webkit-scrollbar-track {
+  background: transparent;
+}
+.settings-view::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+/* Panel header row: title + close button */
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  flex-shrink: 0;
+}
+
+/*
+ * The markup emits `settings-header-row` (not `settings-header`).
+ * Give the title ~5px breathing room from the top and left panel edges.
+ * Re-enable Plan Override group by removing `hidden` from its wrapper in settings-panel.ts.
+ */
+.settings-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  flex-shrink: 0;
+}
+
+.settings-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.75);
+  text-transform: uppercase;
+}
+
+/* ✕ close button — same visual as .header-icon-btn */
+.settings-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s ease, color 0.1s ease;
+  font-size: 14px;
+  line-height: 1;
+  -webkit-app-region: no-drag;
+}
+
+.settings-close:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.settings-close:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.settings-close svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/*
+ * A grouped section inside the settings view.
+ * Mirrors the visual language of the menu's .menu-label sections.
+ */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Honor the HTML `hidden` attribute — higher specificity than .settings-group alone. */
+.settings-group[hidden] {
+  display: none;
+}
+
+/*
+ * Section heading — uppercase muted label, mirrors .menu-label
+ */
+.settings-group-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/*
+ * Segmented control row for Size and Plan options.
+ * `flex-wrap: wrap` allows the 6-option Plan row to reflow on narrow windows.
+ */
+.settings-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/*
+ * Individual option within a segmented control.
+ * Compact, rounded, subtle border so unselected items are clearly tappable.
+ */
+.settings-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.settings-opt:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.85);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/*
+ * Active/selected option — accent treatment matching .plan-badge accent color
+ * (purple accent #7c4dff at low opacity background, with a tinted border).
+ */
+.settings-opt.active {
+  background: rgba(124, 77, 255, 0.22);
+  color: #c3a6ff;
+  border-color: rgba(124, 77, 255, 0.45);
+  font-weight: 600;
+}
+
+.settings-opt.active:hover {
+  background: rgba(124, 77, 255, 0.3);
+}
+
+/*
+ * Opacity slider inside the settings panel.
+ * The panel reuses .opacity-slider-wrap / .opacity-slider / .opacity-slider-label
+ * directly. Add a small override so the wrap has no horizontal padding (the
+ * .settings-group already provides consistent horizontal rhythm).
+ */
+.settings-group .opacity-slider-wrap {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/*
+ * Danger Quit button — full-width, red color language from .menu-item.danger.
+ * Placed at the bottom of the settings view.
+ */
+.settings-quit.danger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  background: rgba(244, 67, 54, 0.1);
+  color: #f44336;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: auto;
+  transition: background 0.1s ease, border-color 0.1s ease;
+  -webkit-app-region: no-drag;
+}
+
+.settings-quit.danger:hover {
+  background: rgba(244, 67, 54, 0.18);
+  border-color: rgba(244, 67, 54, 0.5);
+}
+
+.settings-quit.danger:active {
+  background: rgba(244, 67, 54, 0.25);
+}

@@ -4,3 +4,6 @@ src-tauri/target/
 .env
 *.local
 .idea/
+
+.claude/
+.shared/

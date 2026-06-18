@@ -1,19 +1,17 @@
 /**
  * Right-click context menu.
- * Wires up opacity slider, size presets, plan override, refresh, and quit.
+ * Three items only: Opacity slider, Refresh now, Quit.
  *
- * Issue 5b — grow-then-restore:
- *   On contextmenu, the overlay window is temporarily grown to fit the menu (using
- *   get_window_size / set_window_size Tauri commands from Unit D).  The prior size is
- *   saved and restored in hide().  The CSS max-height/overflow-y safety net (issue 5c)
- *   ensures the menu is still scrollable even if the resize calls fail.
+ * Size presets and Plan Override have been moved to the settings panel (Unit C).
+ * The grow-then-restore window-resize hack has been removed — the slim menu
+ * (≈100px tall) fits inside even the smallest window, so no resize is needed.
  *
- * Issue 6 — focus-loss dismissal:
- *   Clicks outside the tiny WebView never produce a DOM click event, so the existing
- *   outside-click handler can't close the menu.  We add getCurrentWindow().onFocusChanged
- *   plus a belt-and-braces window blur listener so the menu closes whenever the overlay
- *   loses OS focus.  A short guard (BLUR_GUARD_MS) prevents the transient blur that the
- *   window-resize itself may emit from immediately closing the menu.
+ * Focus-loss dismissal:
+ *   Clicks outside the tiny WebView never produce a DOM click event, so the
+ *   outside-click handler can't close the menu.  We use getCurrentWindow().onFocusChanged
+ *   plus a belt-and-braces window.blur listener so the menu closes whenever the
+ *   overlay loses OS focus.  A small BLUR_GUARD_MS prevents an immediate self-dismiss
+ *   from the transient focus change that can occur when the menu first appears.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -32,23 +30,13 @@ let currentOptions: ContextMenuOptions = {
   onOpacityChange: () => {},
 };
 
-// ── Grow-then-restore state (issue 5b) ───────────────────────────────────────
-interface WindowSize { width: number; height: number; }
-
-/** Size saved before we grew the window; restored in hide(). */
-let savedSize: WindowSize | null = null;
-
-/** Minimum dimensions required to show the full menu without scrolling. */
-const MENU_MIN_W = 200;
-const MENU_MIN_H = 360;
-
-// ── Blur-guard (issue 6) ─────────────────────────────────────────────────────
+// ── Blur-guard ───────────────────────────────────────────────────────────────
 /**
  * Milliseconds after menu-open during which blur/focus-loss is ignored.
- * Prevents the transient blur that the grow-resize emits from auto-closing
- * the menu immediately after it opens.
+ * The grow-resize that used to require 300 ms is gone; 50 ms is sufficient
+ * to absorb any transient focus event from the menu appearing in the DOM.
  */
-const BLUR_GUARD_MS = 300;
+const BLUR_GUARD_MS = 50;
 let menuOpenedAt = 0;
 
 /** Build the context menu DOM (once). */
@@ -68,28 +56,12 @@ function buildMenu(): HTMLElement {
       // Apply directly to #app element for instant feedback
       const appEl = document.getElementById('app');
       if (appEl) appEl.style.opacity = String(val);
+      // Keep the cached value in sync so any other reader stays correct
+      currentOptions.currentOpacity = val;
       invoke('set_opacity', { opacity: val }).catch(console.error);
     });
     // Prevent drag-to-move from triggering when using the slider
     slider.addEventListener('mousedown', (e) => e.stopPropagation());
-  }
-
-  // Size presets
-  for (const preset of ['small', 'medium', 'large', 'default']) {
-    const el = menu.querySelector<HTMLElement>(`[data-size="${preset}"]`);
-    el?.addEventListener('click', () => {
-      invoke('set_size_preset', { preset }).catch(console.error);
-      hide();
-    });
-  }
-
-  // Plan override
-  for (const plan of ['auto', 'free', 'pro', 'max5x', 'max20x', 'max']) {
-    const el = menu.querySelector<HTMLElement>(`[data-plan="${plan}"]`);
-    el?.addEventListener('click', () => {
-      invoke('set_plan_override', { plan: plan === 'auto' ? null : plan }).catch(console.error);
-      hide();
-    });
   }
 
   // Refresh now
@@ -117,59 +89,39 @@ function buildMenuHtml(): string {
       <div class="opacity-slider-label">Adjust transparency</div>
     </div>
     <div class="menu-separator"></div>
-    <div class="menu-label">Size</div>
-    <div class="menu-item" data-size="small">Small (220×160)</div>
-    <div class="menu-item" data-size="medium">Medium (280×220)</div>
-    <div class="menu-item" data-size="large">Large (340×280)</div>
-    <div class="menu-item" data-size="default">Reset to default</div>
-    <div class="menu-separator"></div>
-    <div class="menu-label">Plan Override</div>
-    <div class="menu-item" data-plan="auto">Auto-detect</div>
-    <div class="menu-item" data-plan="free">Free</div>
-    <div class="menu-item" data-plan="pro">Pro</div>
-    <div class="menu-item" data-plan="max5x">Max 5×</div>
-    <div class="menu-item" data-plan="max20x">Max 20×</div>
-    <div class="menu-item" data-plan="max">Max (unspecified)</div>
-    <div class="menu-separator"></div>
     <div class="menu-item" id="menu-refresh">Refresh Now</div>
     <div class="menu-separator"></div>
     <div class="menu-item danger" id="menu-quit">Quit</div>
   `;
 }
 
-export async function show(x: number, y: number, options: ContextMenuOptions): Promise<void> {
+export function show(x: number, y: number, options: ContextMenuOptions): void {
   if (!menuEl) {
     menuEl = buildMenu();
   }
 
   currentOptions = options;
 
-  // Update rate-limited state
+  // Update rate-limited state on the refresh item
   const refreshBtn = menuEl.querySelector<HTMLElement>('#menu-refresh');
   if (refreshBtn) {
     refreshBtn.className = 'menu-item' + (options.isRateLimited ? ' disabled' : '');
     refreshBtn.title = options.isRateLimited ? 'Rate limited — cannot refresh' : '';
   }
 
-  // Update slider value
+  // Sync slider to the live applied opacity on #app (single source of truth).
+  // Fall back to getComputedStyle if the inline style hasn't been set yet (CSS default 0.92).
   const slider = menuEl.querySelector<HTMLInputElement>('#opacity-slider');
   if (slider) {
-    slider.value = String(Math.round(options.currentOpacity * 100));
+    const appEl = document.getElementById('app');
+    const rawOpacity = appEl
+      ? (appEl.style.opacity || getComputedStyle(appEl).opacity)
+      : String(options.currentOpacity);
+    const liveOpacity = parseFloat(rawOpacity) || options.currentOpacity;
+    slider.value = String(Math.round(liveOpacity * 100));
   }
 
-  // ── Issue 5b: grow the window if it is too small for the menu ──────────────
-  // Wrap all resize calls in .catch() so a failed invoke never blocks the menu.
-  const prev = await invoke<WindowSize>('get_window_size').catch(() => null);
-  if (prev) {
-    savedSize = prev;
-    const needW = Math.max(prev.width, MENU_MIN_W);
-    const needH = Math.max(prev.height, MENU_MIN_H);
-    if (needW !== prev.width || needH !== prev.height) {
-      await invoke('set_window_size', { width: needW, height: needH }).catch(() => {/* ignore */});
-    }
-  }
-
-  // Record open timestamp for the blur guard AFTER the resize settle.
+  // Record open timestamp for the blur guard
   menuOpenedAt = Date.now();
 
   // Position the menu, keeping it on-screen
@@ -177,7 +129,7 @@ export async function show(x: number, y: number, options: ContextMenuOptions): P
   menuEl.style.top = `${y}px`;
   menuEl.classList.add('visible');
 
-  // Adjust if off-screen (the CSS max-height safety net handles vertical overflow)
+  // Adjust if off-screen (CSS max-height/overflow-y safety net handles vertical overflow)
   const rect = menuEl.getBoundingClientRect();
   if (rect.right > window.innerWidth) {
     menuEl.style.left = `${x - rect.width}px`;
@@ -190,29 +142,21 @@ export async function show(x: number, y: number, options: ContextMenuOptions): P
 export function hide(): void {
   if (!menuEl?.classList.contains('visible')) return;
   menuEl.classList.remove('visible');
-
-  // ── Issue 5b: restore the window to its prior size ────────────────────────
-  if (savedSize) {
-    const { width, height } = savedSize;
-    savedSize = null;
-    invoke('set_window_size', { width, height }).catch(() => {/* ignore */});
-  }
-
-  // Reset blur guard so next open arms it fresh.
+  // Reset blur guard so the next open arms it fresh.
   menuOpenedAt = 0;
 }
 
 /** Wire up context-menu activation; call once during init. */
 export function init(): void {
-  // ── Contextmenu: show (with optional window grow) ─────────────────────────
+  // ── Contextmenu trigger ───────────────────────────────────────────────────
   document.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const opts: ContextMenuOptions = {
-      isRateLimited: false, // updated per-render
+      isRateLimited: currentOptions.isRateLimited,
       currentOpacity: currentOptions.currentOpacity,
       onOpacityChange: currentOptions.onOpacityChange,
     };
-    show(e.clientX, e.clientY, opts).catch(console.error);
+    show(e.clientX, e.clientY, opts);
   });
 
   // ── Inside-click dismissal (clicks within WebView, outside the menu) ───────
@@ -228,13 +172,11 @@ export function init(): void {
     if (e.key === 'Escape') hide();
   });
 
-  // ── Issue 6: focus-loss dismissal ─────────────────────────────────────────
+  // ── Focus-loss dismissal ──────────────────────────────────────────────────
   // Clicks on the desktop or another app never reach the WebView's DOM, so the
-  // inside-click handler above cannot close the menu.  We close it whenever the
+  // inside-click handler above cannot close the menu.  Close it whenever the
   // OS reports that the overlay window lost focus.
 
-  // Helper: ignore transient blur events emitted by the window resize itself
-  // (the grow call in show() may cause a brief focus-lost/focus-gained cycle).
   const shouldDismissOnFocusLoss = (): boolean =>
     Date.now() - menuOpenedAt > BLUR_GUARD_MS;
 

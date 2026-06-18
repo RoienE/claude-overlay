@@ -52,6 +52,10 @@ export interface UsageSnapshot {
 /** Persisted application settings (mirrors `settings.rs:Settings`). */
 export interface Settings {
   opacity: number;
+  /** "small" | "medium" | "large" | "default" */
+  size_preset: string;
+  /** null = auto-detect; "free"|"pro"|"max5x"|"max20x"|"max" = override */
+  plan_override: string | null;
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────────
