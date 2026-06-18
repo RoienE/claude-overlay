@@ -25,6 +25,10 @@ Built with [Tauri 2](https://tauri.app) (Rust core + vanilla TypeScript WebView 
 
 ---
 
+## Screenshots
+Available in the **[screenshots/](./screenshots/)** folder.
+
+
 ## Quick Start
 
 ### Prerequisites
