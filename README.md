@@ -20,6 +20,7 @@ Built with [Tauri 2](https://tauri.app) (Rust core + vanilla TypeScript WebView 
 - Adaptive polling: fast during active sessions, idle-paused when locked/idle
 - Plan badge (Free / Pro / Max 5× / Max 20×) from the profile endpoint
 - Right-click context menu: opacity slider, size presets, plan override, refresh, quit
+- Settings page: opacity slider, size presets, refresh, quit
 - Tray icon + taskbar presence; click the tray icon to toggle show/hide
 - Graceful degradation: falls back to local JSONL transcript estimates when the API is unavailable
 
