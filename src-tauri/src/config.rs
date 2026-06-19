@@ -19,7 +19,7 @@ pub const POLL_INTERVAL: u64 = 60;
 /// Cadence while utilization is actively increasing.
 pub const POLL_FAST: u64 = 30;
 /// A few rapid follow-up checks right after activity stops.
-pub const POLL_FAST_EXTRA: u64 = 5;
+pub const POLL_FAST_EXTRA: u64 = 15;
 /// Retry cadence after transient 5xx / network errors.
 pub const POLL_ERROR: u64 = 30;
 /// Hard cap for 429 exponential backoff (15 min).
@@ -28,7 +28,7 @@ pub const MAX_BACKOFF: u64 = 900;
 /// Set to 0 to disable idle detection.
 pub const IDLE_PAUSE: u64 = 300;
 /// How many rapid `poll_fast_extra` shots to fire after usage stops rising.
-pub const FAST_EXTRA_COUNT: u32 = 3;
+pub const FAST_EXTRA_COUNT: u32 = 2;
 /// How long to wait between credential re-checks when auth is expired (seconds).
 pub const AUTH_RETRY_SECS: u64 = 60;
 /// Profile endpoint slow-poll cadence (seconds, ~1 hour).
