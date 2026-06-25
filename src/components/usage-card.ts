@@ -72,6 +72,7 @@ export function buildCard(): HTMLElement {
       </div>
     </div>
     <div class="card-footer" id="card-footer" style="display:none"></div>
+    <div class="app-version"></div>
   `;
 
   // ── Header button event listeners ─────────────────────────────────────────

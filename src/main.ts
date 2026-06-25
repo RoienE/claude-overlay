@@ -16,6 +16,8 @@ import {
   init as initSettingsPanel,
   setCurrentSettings,
 } from './components/settings-panel.ts';
+import { init as initVersionLabel } from './components/version-label.ts';
+import { initUpdater, checkForUpdates } from './updater.ts';
 
 async function main(): Promise<void> {
   const appEl = document.getElementById('app');
@@ -30,6 +32,16 @@ async function main(): Promise<void> {
 
   // ── Wire up settings panel ────────────────────────────────────────────────
   initSettingsPanel();
+
+  // ── Version label (persists across overlay and settings views) ────────────
+  void initVersionLabel();
+
+  // ── Auto-updater: startup check + periodic background check ───────────────
+  initUpdater();
+  checkForUpdates({ interactive: false }).catch(() => {});
+  setInterval(() => {
+    checkForUpdates({ interactive: false }).catch(() => {});
+  }, 6 * 60 * 60 * 1000); // every 6 hours
 
   // Provide the opacity change callback so the slider updates the card immediately.
   setOpacityCallback((val: number) => {
@@ -79,6 +91,11 @@ async function main(): Promise<void> {
 
     // Updating the store triggers re-render via the subscription above.
     store.set(snap);
+  });
+
+  // ── Tray "Check for Updates" → interactive check ──────────────────────────
+  await listen('updater://check-requested', () => {
+    checkForUpdates({ interactive: true }).catch(() => {});
   });
 }
 

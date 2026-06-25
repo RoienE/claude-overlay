@@ -18,6 +18,9 @@
     "core:window:allow-scale-factor",
     "core:event:allow-listen",
     "core:event:allow-emit",
-    "shell:allow-open"
+    "shell:allow-open",
+    "updater:default",
+    "process:default",
+    "dialog:default"
   ]
 }

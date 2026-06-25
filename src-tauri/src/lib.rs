@@ -28,6 +28,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(poller_state.clone())
         .manage(refresh_notify.clone())
         .setup(move |app| {
@@ -35,9 +38,12 @@ pub fn run() {
             let show_item = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
             let refresh_item =
                 MenuItem::with_id(app, "refresh", "Refresh Now", true, None::<&str>)?;
+            let update_item =
+                MenuItem::with_id(app, "update", "Check for Updates", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&show_item, &refresh_item, &quit_item])?;
+            let menu =
+                Menu::with_items(app, &[&show_item, &refresh_item, &update_item, &quit_item])?;
 
             // Use the app's bundled icon for the tray, or a fallback pixel if unavailable.
             let tray_builder = TrayIconBuilder::new()
@@ -53,6 +59,9 @@ pub fn run() {
                         } // MutexGuard dropped here before any await
                         let notify: tauri::State<RefreshNotify> = app.state();
                         notify.notify_one();
+                    }
+                    "update" => {
+                        let _ = app.emit("updater://check-requested", ());
                     }
                     "quit" => app.exit(0),
                     _ => {}

@@ -22,6 +22,8 @@ html, body {
   height: 100%;
   opacity: 0.92;
   transition: opacity 0.15s ease;
+  /* Positioning context for the absolutely-placed settings panel. */
+  position: relative;
 }
 
 /* ── Overlay card ──────────────────────────────────────────────────────────── */
@@ -745,4 +747,74 @@ input[type="range"].opacity-slider::-webkit-slider-thumb {
 
 .settings-quit.danger:active {
   background: rgba(244, 67, 54, 0.25);
+}
+
+/* ── Settings action button (e.g. "Check for updates") ─────────────────────── */
+
+/*
+ * Neutral action button used for non-destructive settings actions.
+ * Visual language mirrors .settings-quit but uses the purple accent instead
+ * of red, and sits left-aligned with an icon.
+ */
+.settings-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(124, 77, 255, 0.25);
+  background: rgba(124, 77, 255, 0.08);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+  -webkit-app-region: no-drag;
+}
+
+.settings-action:hover {
+  background: rgba(124, 77, 255, 0.15);
+  border-color: rgba(124, 77, 255, 0.4);
+  color: #e8e8e8;
+}
+
+.settings-action:active {
+  background: rgba(124, 77, 255, 0.22);
+}
+
+/* Icon slot inside .settings-action */
+.settings-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: rgba(124, 77, 255, 0.85);
+}
+
+.settings-action-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+/* ── App version label ──────────────────────────────────────────────────────── */
+
+/*
+ * Version badge — a footer row INSIDE the card and the settings panel surface
+ * (last flex child of each), so it sits at the bottom of the overlay without
+ * floating outside it or overlapping content. flex:0 0 auto fixes its height;
+ * the content above (card-body / settings-view) takes the remaining space.
+ */
+.app-version {
+  flex: 0 0 auto;
+  text-align: right;
+  padding: 3px 10px 4px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.3);
+  user-select: none;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
 }

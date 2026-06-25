@@ -14,6 +14,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { checkForUpdates } from '../updater.ts';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -189,9 +190,18 @@ function buildPanel(root: HTMLElement): void {
       </div>
 
       <div class="settings-group">
+        <div class="settings-group-title">Updates</div>
+        <button class="settings-action" id="settings-check-update-btn">
+          <span class="settings-action-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg></span>
+          <span>Check for updates</span>
+        </button>
+      </div>
+
+      <div class="settings-group">
         <button class="settings-quit danger" id="settings-quit-btn">Quit</button>
       </div>
     </div>
+    <div class="app-version"></div>
   `;
 
   // ── Close button ──────────────────────────────────────────────────────────
@@ -249,6 +259,12 @@ function buildPanel(root: HTMLElement): void {
     // Prevent drag-to-move from triggering when using the slider
     slider.addEventListener('mousedown', (e) => e.stopPropagation());
   }
+
+  // ── Check for updates button ──────────────────────────────────────────────
+  root.querySelector<HTMLButtonElement>('#settings-check-update-btn')
+    ?.addEventListener('click', () => {
+      void checkForUpdates({ interactive: true });
+    });
 
   // ── Quit button ───────────────────────────────────────────────────────────
   root.querySelector<HTMLButtonElement>('#settings-quit-btn')
