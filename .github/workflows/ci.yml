@@ -81,7 +81,12 @@ jobs:
         run: pnpm build
 
       - name: Build Tauri app (populates Rust target cache)
-        run: pnpm tauri build ${{ matrix.os == 'macos-14' && '--target universal-apple-darwin' || '' }}
-        # A full release build warms the most relevant cache entries.
-        # The heavy release profile (lto=true, codegen-units=1) matches what
-        # the release workflow compiles, so restored artefacts are maximally useful.
+        run: pnpm tauri build --no-bundle ${{ matrix.os == 'macos-14' && '--target universal-apple-darwin' || '' }}
+        # --no-bundle: warm the Rust cache by compiling the app, but SKIP the
+        # bundling+signing step. The Rust target cache (the expensive lto=true,
+        # codegen-units=1 compile) is identical with or without bundling, so the
+        # restored artefacts are just as useful for tag release runs. Skipping the
+        # bundle also avoids the updater signing step here — this workflow has no
+        # TAURI_SIGNING_PRIVATE_KEY (only release.yml does), and a plain build with
+        # a pubkey + createUpdaterArtifacts set would otherwise fail with
+        # "A public key has been found, but no private key".
