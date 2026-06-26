@@ -21,8 +21,18 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 export const SESSIONS_VIEW_WIDTH = 320;
 export const SESSIONS_VIEW_HEIGHT = 360;
 
-/** Re-poll interval in ms while the panel is open. */
-const POLL_INTERVAL_MS = 5000;
+/**
+ * Re-poll interval in ms while the panel is open.
+ *
+ * This is an INDEPENDENT timer (not tied to the account-usage poller in
+ * `poller.rs`).  `get_sessions` only reads local JSONL transcripts — no network,
+ * no rate limit — so it can refresh quickly.  2s keeps token counts feeling live
+ * while re-parsing live transcripts at a modest cadence.
+ */
+const POLL_INTERVAL_MS = 3000;
+
+/** Green→orange freshness boundary: dots older than this threshold show orange instead of green. */
+const FRESH_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -314,12 +324,22 @@ function renderNode(node: TreeNode, depth: number, visited: Set<string>): string
   const cache = formatTokenCount(s.cacheCreation + s.cacheRead);
 
   const modelPrefix = s.model ? `${escapeHtml(s.model)} · ` : '';
-  const agentName = s.agentName
-    ? `<span class="session-name"> · ${escapeHtml(s.agentName)}</span>`
-    : '';
-  const activeDot = s.active
+
+  // Title: the project name is the same across an entire family, so only the
+  // root row (depth 0) shows it.  Child rows show just the agent name.
+  const agentLabel = s.agentName ? escapeHtml(s.agentName) : '';
+  const titleHtml = depth === 0
+    ? `<span class="session-project">${escapeHtml(s.project)}</span>` +
+      (agentLabel ? `<span class="session-name"> · ${agentLabel}</span>` : '')
+    : `<span class="session-name">${agentLabel}</span>`;
+
+  // Status dot: green if last active < 5 min ago, orange otherwise.
+  // Treat NaN or a negative age (clock skew) as fresh so we never show a
+  // misleading orange on a brand-new or timestamp-less session.
+  const ageMs = Date.now() - new Date(s.lastActive).getTime();
+  const statusDot = (isNaN(ageMs) || ageMs < 0 || ageMs < FRESH_THRESHOLD_MS)
     ? '<span class="session-active-dot" title="Active"></span>'
-    : '';
+    : '<span class="session-stale-dot" title="Idle"></span>';
 
   // Caret for parents; invisible same-width spacer for leaf rows (keeps column aligned)
   const safeId = escapeHtml(s.id);
@@ -335,9 +355,8 @@ function renderNode(node: TreeNode, depth: number, visited: Set<string>): string
   return (
     `<div class="session-row" data-node-id="${safeId}" data-depth="${depth}">` +
       `<div class="session-meta">` +
-        `${caret}${activeDot}` +
-        `<span class="session-project">${escapeHtml(s.project)}</span>` +
-        `${agentName}` +
+        `${caret}${statusDot}` +
+        `${titleHtml}` +
         `<span class="session-secondary">${modelPrefix}${relTime}</span>` +
       `</div>` +
       `<div class="session-tokens">Total ${total} · in ${inp} · out ${out} · cache ${cache}</div>` +

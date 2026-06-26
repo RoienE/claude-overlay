@@ -884,13 +884,23 @@ input[type="range"].opacity-slider::-webkit-slider-thumb {
   overflow: hidden;
 }
 
-/* Green pulse dot shown when session.active is true */
+/* Green pulse dot shown when the session was active within the last 5 minutes */
 .session-active-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: #4caf50;
   box-shadow: 0 0 4px rgba(76, 175, 80, 0.6);
+  flex-shrink: 0;
+}
+
+/* Orange idle dot shown when the session has had no activity for ≥ 5 minutes */
+.session-stale-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f5a623;
+  box-shadow: 0 0 4px rgba(245, 166, 35, 0.6);
   flex-shrink: 0;
 }
 

@@ -33,6 +33,11 @@ pub struct Settings {
     /// Uses `skip_serializing_if` so `null` round-trips cleanly as an absent key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_override: Option<String>,
+
+    /// Recency window for the active sessions tracker (minutes).
+    /// Valid range: 5–720. Defaults to 30 min.
+    #[serde(default = "default_history_threshold_mins")]
+    pub history_threshold_mins: u32,
 }
 
 fn default_opacity() -> f32 {
@@ -43,12 +48,17 @@ fn default_size_preset() -> String {
     "default".to_string()
 }
 
+fn default_history_threshold_mins() -> u32 {
+    30
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             opacity: default_opacity(),
             size_preset: default_size_preset(),
             plan_override: None,
+            history_threshold_mins: default_history_threshold_mins(),
         }
     }
 }
@@ -98,6 +108,12 @@ pub fn clamp_opacity(v: f32) -> f32 {
     v.clamp(OPACITY_MIN, OPACITY_MAX)
 }
 
+/// Clamp a history threshold value to the allowed range `[5, 720]` minutes.
+#[inline]
+pub fn clamp_history_threshold(v: u32) -> u32 {
+    v.clamp(5, 720)
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -121,7 +137,7 @@ mod tests {
 
     #[test]
     fn serialize_deserialize_round_trip() {
-        let original = Settings { opacity: 0.75, size_preset: "large".to_string(), plan_override: Some("pro".to_string()) };
+        let original = Settings { opacity: 0.75, size_preset: "large".to_string(), plan_override: Some("pro".to_string()), history_threshold_mins: 30 };
         let json = serde_json::to_string(&original).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!((restored.opacity - 0.75).abs() < f32::EPSILON, "round-trip must preserve opacity");
@@ -158,7 +174,7 @@ mod tests {
     #[test]
     fn opacity_boundary_values_survive_round_trip() {
         for &v in &[OPACITY_MIN, OPACITY_MAX, 0.5, 0.92] {
-            let s = Settings { opacity: v, size_preset: "default".to_string(), plan_override: None };
+            let s = Settings { opacity: v, size_preset: "default".to_string(), plan_override: None, history_threshold_mins: 30 };
             let json = serde_json::to_string(&s).unwrap();
             let restored: Settings = serde_json::from_str(&json).unwrap();
             assert!((restored.opacity - v).abs() < f32::EPSILON, "value {v} must survive round-trip");
@@ -204,7 +220,7 @@ mod tests {
     #[test]
     fn size_preset_round_trip() {
         for preset in &["small", "medium", "large", "default"] {
-            let s = Settings { opacity: 0.92, size_preset: preset.to_string(), plan_override: None };
+            let s = Settings { opacity: 0.92, size_preset: preset.to_string(), plan_override: None, history_threshold_mins: 30 };
             let json = serde_json::to_string(&s).unwrap();
             let restored: Settings = serde_json::from_str(&json).unwrap();
             assert_eq!(&restored.size_preset, preset, "size_preset '{preset}' must survive round-trip");
@@ -218,6 +234,7 @@ mod tests {
                 opacity: 0.92,
                 size_preset: "default".to_string(),
                 plan_override: Some(plan.to_string()),
+                history_threshold_mins: 30,
             };
             let json = serde_json::to_string(&s).unwrap();
             let restored: Settings = serde_json::from_str(&json).unwrap();
@@ -227,11 +244,67 @@ mod tests {
 
     #[test]
     fn plan_override_none_round_trip() {
-        let s = Settings { opacity: 0.92, size_preset: "default".to_string(), plan_override: None };
+        let s = Settings { opacity: 0.92, size_preset: "default".to_string(), plan_override: None, history_threshold_mins: 30 };
         let json = serde_json::to_string(&s).unwrap();
         // None → skip_serializing_if, so "plan_override" key must not appear.
         assert!(!json.contains("plan_override"), "None plan_override must not be serialized");
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!(restored.plan_override.is_none(), "absent plan_override key must deserialize to None");
+    }
+
+    // ── history_threshold_mins ────────────────────────────────────────────────
+
+    #[test]
+    fn default_history_threshold_mins_is_30() {
+        let s = Settings::default();
+        assert_eq!(s.history_threshold_mins, 30, "default history_threshold_mins should be 30");
+    }
+
+    #[test]
+    fn empty_json_gives_history_threshold_default() {
+        // An empty object must produce 30 for the new field (backward compat).
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.history_threshold_mins, 30);
+    }
+
+    #[test]
+    fn opacity_only_json_gives_history_threshold_default() {
+        // Old settings files with only "opacity" must gain the default — backward compat.
+        let s: Settings = serde_json::from_str(r#"{"opacity":0.5}"#).unwrap();
+        assert!((s.opacity - 0.5).abs() < f32::EPSILON);
+        assert_eq!(s.history_threshold_mins, 30, "old file must gain default history_threshold_mins");
+    }
+
+    #[test]
+    fn history_threshold_mins_round_trip() {
+        for &mins in &[5u32, 30, 60, 120, 720] {
+            let s = Settings {
+                opacity: 0.92,
+                size_preset: "default".to_string(),
+                plan_override: None,
+                history_threshold_mins: mins,
+            };
+            let json = serde_json::to_string(&s).unwrap();
+            let restored: Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                restored.history_threshold_mins, mins,
+                "history_threshold_mins {mins} must survive round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_history_threshold_enforces_bounds() {
+        // Below minimum → clamped to 5.
+        assert_eq!(clamp_history_threshold(0), 5);
+        assert_eq!(clamp_history_threshold(4), 5);
+        // At minimum → unchanged.
+        assert_eq!(clamp_history_threshold(5), 5);
+        // Within range → unchanged.
+        assert_eq!(clamp_history_threshold(30), 30);
+        assert_eq!(clamp_history_threshold(720), 720);
+        // Above maximum → clamped to 720.
+        assert_eq!(clamp_history_threshold(721), 720);
+        assert_eq!(clamp_history_threshold(9999), 720);
     }
 }

@@ -67,6 +67,7 @@ async function main(): Promise<void> {
         opacity: settings.opacity,
         size_preset: settings.size_preset ?? 'default',
         plan_override: settings.plan_override ?? null,
+        history_threshold_mins: settings.history_threshold_mins ?? 30,
       });
     })
     .catch((err) => {
