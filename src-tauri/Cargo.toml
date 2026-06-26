@@ -1,6 +1,6 @@
 [package]
 name = "claude-overlay"
-version = "0.5.2"
+version = "0.5.3"
 description = "Always-on-top Claude usage overlay"
 authors = []
 edition = "2021"
