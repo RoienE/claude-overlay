@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema/acl-schema.json",
   "identifier": "default",
-  "description": "Default capability set for claude-overlay",
+  "description": "Default capability set for Claude Overlay.",
   "windows": ["main"],
   "permissions": [
     "core:default",
