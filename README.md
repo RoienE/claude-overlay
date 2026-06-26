@@ -1,4 +1,4 @@
-# claude-overlay
+# Claude Overlay
 
 > **⚠ Unofficial project — read the disclaimer below before use.**
 

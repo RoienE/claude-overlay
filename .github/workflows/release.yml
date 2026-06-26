@@ -132,7 +132,7 @@ jobs:
         with:
           # On a tag push reuse the pushed tag; on manual dispatch derive from app version.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseName: "claude-overlay __VERSION__"
+          releaseName: "Claude Overlay __VERSION__"
           releaseBody: |
             ## Downloads
 
