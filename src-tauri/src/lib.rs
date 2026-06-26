@@ -6,6 +6,7 @@ pub mod fallback_logs;
 pub mod model;
 pub mod plan_detector;
 pub mod poller;
+pub mod sessions;
 pub mod settings;
 pub mod usage_client;
 pub mod window_ctl;
@@ -20,13 +21,58 @@ use tokio::sync::mpsc;
 
 use poller::{PollerState, RefreshNotify, SharedPollerState};
 
+/// Set the Windows AppUserModelID at process start.
+///
+/// Tauri v2 does not call SetCurrentProcessExplicitAppUserModelID itself.
+/// The NSIS installer sets `System.AppUserModel.ID = com.claude-overlay.application`
+/// on the Start Menu .lnk via SetLnkAppUserModelId, but without the running
+/// process registering the same AUMID, Windows treats the shortcut as a bare
+/// .lnk (shortcut-arrow overlay, generic icon).  Setting it here makes the
+/// process AUMID match the shortcut AUMID, which suppresses the arrow and
+/// restores the correct icon.
+#[cfg(windows)]
+fn set_aumid() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(appid: *const u16) -> i32;
+    }
+
+    let wide: Vec<u16> = OsStr::new("com.claude-overlay.application")
+        .encode_wide()
+        .chain(std::iter::once(0u16))
+        .collect();
+
+    // SAFETY: wide is null-terminated and lives for the duration of this call.
+    unsafe {
+        SetCurrentProcessExplicitAppUserModelID(wide.as_ptr());
+    }
+}
+
 pub fn run() {
+    // Must be called before any window or COM object is created so Windows can
+    // associate the process with the Start Menu shortcut's AppUserModelID.
+    #[cfg(windows)]
+    set_aumid();
+
     env_logger::init();
 
     let poller_state: SharedPollerState = Arc::new(Mutex::new(PollerState::default()));
     let refresh_notify: RefreshNotify = Arc::new(tokio::sync::Notify::new());
 
     tauri::Builder::default()
+        // single-instance MUST be registered first so it can intercept a second
+        // launch before the rest of the app initialises.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // A second instance was launched — bring the existing window to front.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -146,6 +192,7 @@ pub fn run() {
             window_ctl::get_settings,
             window_ctl::get_window_size,
             window_ctl::set_window_size,
+            window_ctl::get_sessions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

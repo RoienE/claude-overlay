@@ -229,3 +229,12 @@ pub async fn quit_app(app: AppHandle) -> Result<(), String> {
     app.exit(0);
     Ok(())
 }
+
+/// Return active session summaries parsed from local Claude Code JSONL transcripts.
+///
+/// Only sessions whose JSONL file was modified within the last 10 minutes are
+/// included.  Results are sorted by `lastActive` descending (most recent first).
+#[tauri::command]
+pub async fn get_sessions() -> Vec<crate::model::SessionSummary> {
+    crate::sessions::list_active()
+}

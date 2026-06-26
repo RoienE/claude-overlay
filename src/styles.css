@@ -798,6 +798,158 @@ input[type="range"].opacity-slider::-webkit-slider-thumb {
   height: 14px;
 }
 
+/* ── Sessions panel (full-window overlay view) ──────────────────────────────── */
+
+/*
+ * Mirrors #settings-root.settings-panel exactly — same position, bg, border,
+ * blur, and visibility toggle. Hidden by default; `.visible` reveals it.
+ */
+#sessions-root.sessions-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(20, 20, 28, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #e8e8e8;
+}
+
+#sessions-root.sessions-panel.visible {
+  display: flex;
+}
+
+/*
+ * Inner scrollable container — mirrors .settings-view.
+ * overflow-y:auto is a safety net if the grow-resize fails.
+ */
+.sessions-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 10px 10px;
+  gap: 10px;
+  /* Indicate the panel is draggable, matching the main overlay card. */
+  cursor: grab;
+}
+.sessions-view:active {
+  cursor: grabbing;
+}
+
+/* Slim scrollbar consistent with .card-body and .settings-view */
+.sessions-view::-webkit-scrollbar {
+  width: 3px;
+}
+.sessions-view::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sessions-view::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+/* Container for the list of session rows */
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * Individual session entry — each row is a two-line card with a subtle
+ * separator. The last row omits its border so there's no trailing line.
+ */
+.session-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.session-row:last-child {
+  border-bottom: none;
+}
+
+/* Project name + optional active dot + model + relative time */
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+
+/* Green pulse dot shown when session.active is true */
+.session-active-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4caf50;
+  box-shadow: 0 0 4px rgba(76, 175, 80, 0.6);
+  flex-shrink: 0;
+}
+
+/* Bold project name — primary label */
+.session-project {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e8e8e8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 55%;
+}
+
+/* Session / agent name, shown right after the project name */
+.session-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.78);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+/* Muted secondary text: model and relative time */
+.session-secondary {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Compact token breakdown: "Total 12.3k · in 3k · out 1k · cache 8k" */
+.session-tokens {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Empty / loading / error state messages inside .sessions-list */
+.sessions-empty,
+.sessions-loading {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+  padding: 16px 0;
+}
+
+.sessions-error {
+  font-size: 11px;
+  color: rgba(244, 67, 54, 0.7);
+  text-align: center;
+  padding: 16px 0;
+}
+
 /* ── App version label ──────────────────────────────────────────────────────── */
 
 /*
