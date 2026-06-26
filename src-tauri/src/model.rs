@@ -226,6 +226,32 @@ pub struct FallbackUsage {
     pub cache_read_7d: u64,
 }
 
+// ── Per-session summary ───────────────────────────────────────────────────────
+
+/// Per-session token usage summary derived from local JSONL transcripts.
+///
+/// Serialises with camelCase keys so the frontend receives `sessionId`,
+/// `lastActive`, `inputTokens`, etc.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub project: String,
+    /// Sub-agent type (e.g. "Explore", "developer-backend") for sub-agent
+    /// transcripts; `None` for ordinary top-level sessions.
+    pub agent_name: Option<String>,
+    pub model: Option<String>,
+    /// ISO 8601 UTC timestamp of the last assistant message seen.
+    pub last_active: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation: u64,
+    pub cache_read: u64,
+    pub total_tokens: u64,
+    /// `true` when the session file was modified within the active threshold.
+    pub active: bool,
+}
+
 // ── HTTP outcome classification ───────────────────────────────────────────────
 
 #[derive(Debug)]

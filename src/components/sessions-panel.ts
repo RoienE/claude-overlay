@@ -1,0 +1,250 @@
+/**
+ * Sessions panel — full-window in-overlay view showing per-session token usage.
+ *
+ * Strategy (mirrors settings-panel.ts):
+ *   The panel is a sibling of the overlay card inside #app, toggled via .visible.
+ *   On open the window is grown to SESSIONS_VIEW_WIDTH × SESSIONS_VIEW_HEIGHT (only
+ *   grown, never shrunk — Math.max).  On close the saved size is restored.  All
+ *   resize calls are .catch()-guarded so a failed invoke never blocks the panel.
+ *   The panel is internally scrollable (.sessions-view { overflow-y: auto }) as a
+ *   safety net if the grow call fails or the display constrains the window.
+ *   Sessions are re-fetched every POLL_INTERVAL_MS while the panel is open.
+ *
+ * Exports: init(), open(), close(), isOpen()
+ */
+
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+export const SESSIONS_VIEW_WIDTH = 320;
+export const SESSIONS_VIEW_HEIGHT = 360;
+
+/** Re-poll interval in ms while the panel is open. */
+const POLL_INTERVAL_MS = 5000;
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface SessionSummary {
+  sessionId: string;
+  project: string;
+  agentName: string | null;
+  model: string | null;
+  lastActive: string;   // ISO 8601 timestamp
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreation: number;
+  cacheRead: number;
+  totalTokens: number;
+  active: boolean;
+}
+
+// ── Module state ─────────────────────────────────────────────────────────────
+
+interface WindowSize { width: number; height: number; }
+
+let panelEl: HTMLElement | null = null;
+let _isOpen = false;
+let savedSize: WindowSize | null = null;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/** Initialise the panel (append root element to #app). Call once at bootstrap. */
+export function init(): void {
+  const appEl = document.getElementById('app');
+  if (!appEl) return;
+
+  const root = document.createElement('div');
+  root.id = 'sessions-root';
+  root.className = 'sessions-panel';
+  appEl.appendChild(root);
+  panelEl = root;
+
+  // Build the inner DOM
+  buildPanel(root);
+
+  // Keyboard dismissal. Unlike the settings panel, the sessions view does NOT
+  // auto-close on focus loss / click-away — it stays open as a persistent
+  // tracker until the user closes it explicitly (Escape or the close button).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && _isOpen) close();
+  });
+}
+
+/** Open the sessions panel: grow window, hide card, show panel, start polling. */
+export async function open(): Promise<void> {
+  if (_isOpen || !panelEl) return;
+  _isOpen = true;
+
+  // Save current window size, then grow if needed
+  const prev = await invoke<WindowSize>('get_window_size').catch(() => null);
+  if (prev) {
+    savedSize = prev;
+    const needW = Math.max(prev.width, SESSIONS_VIEW_WIDTH);
+    const needH = Math.max(prev.height, SESSIONS_VIEW_HEIGHT);
+    if (needW !== prev.width || needH !== prev.height) {
+      await invoke('set_window_size', { width: needW, height: needH }).catch(() => { /* non-fatal */ });
+    }
+  }
+
+  // Hide card, show panel
+  hideCard(true);
+  panelEl.classList.add('visible');
+
+  // Load sessions immediately, then start re-poll (show Loading placeholder while fetching)
+  renderSessions().catch(console.error);
+  pollTimer = setInterval(() => {
+    renderSessions().catch(console.error);
+  }, POLL_INTERVAL_MS);
+}
+
+/** Close the sessions panel: hide panel, clear poll timer, restore window size, show card. */
+export function close(): void {
+  if (!_isOpen || !panelEl) return;
+  _isOpen = false;
+
+  // Clear re-poll to avoid leaked timers
+  if (pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  panelEl.classList.remove('visible');
+  hideCard(false);
+
+  // Restore saved window size
+  if (savedSize) {
+    const { width, height } = savedSize;
+    savedSize = null;
+    invoke('set_window_size', { width, height }).catch(() => { /* non-fatal */ });
+  }
+}
+
+/** Returns true if the panel is currently visible. */
+export function isOpen(): boolean {
+  return _isOpen;
+}
+
+// ── DOM construction ─────────────────────────────────────────────────────────
+
+function buildPanel(root: HTMLElement): void {
+  root.innerHTML = `
+    <div class="sessions-view">
+      <div class="settings-header-row">
+        <span class="settings-title">Sessions</span>
+        <button class="settings-close" id="sessions-close-btn" aria-label="Close sessions">✕</button>
+      </div>
+      <div class="sessions-list" id="sessions-list">
+        <div class="sessions-loading">Loading…</div>
+      </div>
+    </div>
+    <div class="app-version"></div>
+  `;
+
+  // Close button
+  root.querySelector<HTMLButtonElement>('#sessions-close-btn')
+    ?.addEventListener('click', () => close());
+
+  // Drag-to-move: left-click drag anywhere on the panel except interactive
+  // elements — mirrors the main overlay card so the window can be repositioned
+  // from this view too.
+  root.addEventListener('mousedown', async (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.closest('button') !== null) {
+      return;
+    }
+    await getCurrentWindow().startDragging();
+  });
+}
+
+// ── Session rendering ─────────────────────────────────────────────────────────
+
+async function renderSessions(): Promise<void> {
+  if (!panelEl) return;
+  const listEl = panelEl.querySelector<HTMLElement>('#sessions-list');
+  if (!listEl) return;
+
+  let sessions: SessionSummary[];
+  try {
+    sessions = await invoke<SessionSummary[]>('get_sessions');
+  } catch (err) {
+    listEl.innerHTML = `<div class="sessions-error">Failed to load sessions.</div>`;
+    console.error('get_sessions failed:', err);
+    return;
+  }
+
+  if (sessions.length === 0) {
+    listEl.innerHTML = `<div class="sessions-empty">No active sessions</div>`;
+    return;
+  }
+
+  listEl.innerHTML = sessions.map((s) => renderSessionRow(s)).join('');
+}
+
+function renderSessionRow(s: SessionSummary): string {
+  const relTime = formatRelativeTime(s.lastActive);
+  const total = formatTokenCount(s.totalTokens);
+  const inp = formatTokenCount(s.inputTokens);
+  const out = formatTokenCount(s.outputTokens);
+  const cache = formatTokenCount(s.cacheCreation + s.cacheRead);
+
+  const modelPrefix = s.model ? `${escapeHtml(s.model)} · ` : '';
+  const agentName = s.agentName
+    ? `<span class="session-name"> · ${escapeHtml(s.agentName)}</span>`
+    : '';
+  const activeDot = s.active
+    ? '<span class="session-active-dot" title="Active"></span>'
+    : '';
+
+  return `
+    <div class="session-row">
+      <div class="session-meta">
+        ${activeDot}<span class="session-project">${escapeHtml(s.project)}</span>${agentName}<span class="session-secondary">${modelPrefix}${relTime}</span>
+      </div>
+      <div class="session-tokens">Total ${total} · in ${inp} · out ${out} · cache ${cache}</div>
+    </div>
+  `;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Format a number compactly: 12345 → "12.3k", 1500000 → "1.5M". */
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** Format an ISO 8601 timestamp as a short relative time ("just now", "5m ago"). */
+function formatRelativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (isNaN(diffMs) || diffMs < 0) return 'just now';
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return 'just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+/** Escape HTML special characters for safe inline rendering. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Show or hide the overlay card (first .overlay-card child of #app). */
+function hideCard(hidden: boolean): void {
+  const appEl = document.getElementById('app');
+  if (!appEl) return;
+  const card = appEl.querySelector<HTMLElement>('.overlay-card');
+  if (card) card.style.display = hidden ? 'none' : '';
+}

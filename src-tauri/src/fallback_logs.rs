@@ -17,7 +17,7 @@ use crate::config::CLAUDE_CONFIG_DIR_ENV;
 use crate::model::FallbackUsage;
 
 /// Find the `.claude` directory, honouring `CLAUDE_CONFIG_DIR`.
-fn claude_dir() -> Option<PathBuf> {
+pub(crate) fn claude_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var(CLAUDE_CONFIG_DIR_ENV) {
         let p = PathBuf::from(dir);
         if p.is_dir() {
@@ -39,29 +39,35 @@ fn claude_dir() -> Option<PathBuf> {
     None
 }
 
-/// Partial shape of an assistant message record in a JSONL transcript.
+/// Partial shape of a JSONL transcript record.
 #[derive(Debug, Deserialize)]
-struct JsRecord {
-    timestamp: Option<String>,
-    message: Option<JsMessage>,
+pub(crate) struct JsRecord {
+    pub(crate) timestamp: Option<String>,
+    pub(crate) message: Option<JsMessage>,
+    /// Working directory recorded at the top level of each event (additive field).
+    #[serde(default)]
+    pub(crate) cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct JsMessage {
-    role: Option<String>,
-    usage: Option<JsUsage>,
+pub(crate) struct JsMessage {
+    pub(crate) role: Option<String>,
+    pub(crate) usage: Option<JsUsage>,
+    /// Model name recorded on assistant messages (additive field).
+    #[serde(default)]
+    pub(crate) model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct JsUsage {
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cache_creation_input_tokens: Option<u64>,
-    cache_read_input_tokens: Option<u64>,
+pub(crate) struct JsUsage {
+    pub(crate) input_tokens: Option<u64>,
+    pub(crate) output_tokens: Option<u64>,
+    pub(crate) cache_creation_input_tokens: Option<u64>,
+    pub(crate) cache_read_input_tokens: Option<u64>,
 }
 
 /// Recursively collect all `.jsonl` files under the `projects/` subdirectory.
-fn collect_jsonl_files(base: &PathBuf) -> Vec<PathBuf> {
+pub(crate) fn collect_jsonl_files(base: &PathBuf) -> Vec<PathBuf> {
     let projects_dir = base.join("projects");
     if !projects_dir.is_dir() {
         return vec![];

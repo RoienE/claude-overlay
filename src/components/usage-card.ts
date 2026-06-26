@@ -11,6 +11,7 @@ import { createWindowBar, updateWindowBar } from './window-bar.ts';
 import { CountdownManager } from '../countdown.ts';
 import { renderOverusageSection } from './overusage-section.ts';
 import { open as openSettings } from './settings-panel.ts';
+import { open as openSessions } from './sessions-panel.ts';
 
 const countdownMgr = new CountdownManager();
 countdownMgr.start();
@@ -21,6 +22,15 @@ const REFRESH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="
   <polyline points="23 4 23 10 17 10"></polyline>
   <polyline points="1 20 1 14 7 14"></polyline>
   <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+</svg>`;
+
+const SESSIONS_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <line x1="8" y1="6" x2="21" y2="6"></line>
+  <line x1="8" y1="12" x2="21" y2="12"></line>
+  <line x1="8" y1="18" x2="21" y2="18"></line>
+  <line x1="3" y1="6" x2="3.01" y2="6"></line>
+  <line x1="3" y1="12" x2="3.01" y2="12"></line>
+  <line x1="3" y1="18" x2="3.01" y2="18"></line>
 </svg>`;
 
 const GEAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -61,6 +71,7 @@ export function buildCard(): HTMLElement {
       <span class="account-name" id="account-name"></span>
       <div class="header-right-cluster">
         <button class="header-icon-btn" id="header-refresh" title="Refresh now" aria-label="Refresh now">${REFRESH_SVG}</button>
+        <button class="header-icon-btn" id="header-sessions" title="Sessions" aria-label="Sessions">${SESSIONS_SVG}</button>
         <button class="header-icon-btn" id="header-settings" title="Settings" aria-label="Settings">${GEAR_SVG}</button>
         <span class="status-dot loading" id="status-dot" title="Loading…"></span>
       </div>
@@ -80,6 +91,11 @@ export function buildCard(): HTMLElement {
   refreshBtn?.addEventListener('click', () => {
     if (_headerRefreshRateLimited) return;
     invoke('request_refresh').catch(console.error);
+  });
+
+  const sessionsBtn = card.querySelector<HTMLButtonElement>('#header-sessions');
+  sessionsBtn?.addEventListener('click', () => {
+    openSessions().catch(console.error);
   });
 
   const settingsBtn = card.querySelector<HTMLButtonElement>('#header-settings');

@@ -16,6 +16,7 @@ import {
   init as initSettingsPanel,
   setCurrentSettings,
 } from './components/settings-panel.ts';
+import { init as initSessionsPanel } from './components/sessions-panel.ts';
 import { init as initVersionLabel } from './components/version-label.ts';
 import { initUpdater, checkForUpdates } from './updater.ts';
 
@@ -32,6 +33,9 @@ async function main(): Promise<void> {
 
   // ── Wire up settings panel ────────────────────────────────────────────────
   initSettingsPanel();
+
+  // ── Wire up sessions panel ────────────────────────────────────────────────
+  initSessionsPanel();
 
   // ── Version label (persists across overlay and settings views) ────────────
   void initVersionLabel();

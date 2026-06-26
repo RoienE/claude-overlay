@@ -6,6 +6,7 @@ pub mod fallback_logs;
 pub mod model;
 pub mod plan_detector;
 pub mod poller;
+pub mod sessions;
 pub mod settings;
 pub mod usage_client;
 pub mod window_ctl;
@@ -146,6 +147,7 @@ pub fn run() {
             window_ctl::get_settings,
             window_ctl::get_window_size,
             window_ctl::set_window_size,
+            window_ctl::get_sessions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
