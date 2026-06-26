@@ -950,6 +950,46 @@ input[type="range"].opacity-slider::-webkit-slider-thumb {
   padding: 16px 0;
 }
 
+/*
+ * Sub-agent tree nesting — each .session-children adds ~13px cumulative indent
+ * (6px margin + 7px padding) and draws a vertical guide line on the left so
+ * nesting depth is legible without wasting horizontal space in the 320px window.
+ * Existing overflow/ellipsis on .session-project and .session-secondary handle
+ * text truncation at any depth.
+ */
+.session-children {
+  margin-left: 6px;
+  padding-left: 7px;
+  border-left: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/*
+ * Expand/collapse caret — fixed 12px width so the column is reserved on every
+ * row, whether the row has children (▾/▸) or is a leaf (invisible spacer).
+ * Lives as the first flex child of .session-meta so it shares that flex line
+ * with the active dot, project name, agent name, and secondary text.
+ */
+.session-caret {
+  width: 12px;
+  flex-shrink: 0;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 9px;
+  background: none;
+  border: none;
+  padding: 0;
+  line-height: 1;
+}
+
+/*
+ * Leaf spacer — invisible but keeps the 12px column so leaf rows stay aligned
+ * with sibling rows that do have a caret.
+ */
+.session-caret.leaf {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* ── App version label ──────────────────────────────────────────────────────── */
 
 /*

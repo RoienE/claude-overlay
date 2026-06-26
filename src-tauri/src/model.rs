@@ -236,6 +236,13 @@ pub struct FallbackUsage {
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub session_id: String,
+    /// Stable node identity: `sessionId` for top-level sessions, `agentId`
+    /// (filename stem after `agent-`) for sub-agents.  The frontend keys the
+    /// tree on this field via `id` / `parentId`.
+    pub id: String,
+    /// Parent node id; `None` for top-level sessions (forest roots).
+    /// Serialises as `parentId`.
+    pub parent_id: Option<String>,
     pub project: String,
     /// Sub-agent type (e.g. "Explore", "developer-backend") for sub-agent
     /// transcripts; `None` for ordinary top-level sessions.

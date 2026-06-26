@@ -27,6 +27,10 @@ const POLL_INTERVAL_MS = 5000;
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface SessionSummary {
+  /** Stable node id: sessionId for a top-level session, agentId for a sub-agent. */
+  id: string;
+  /** Parent node id; null for a top-level session (forest root). */
+  parentId: string | null;
   sessionId: string;
   project: string;
   agentName: string | null;
@@ -40,6 +44,12 @@ export interface SessionSummary {
   active: boolean;
 }
 
+/** Internal tree node built each render pass from the flat session list. */
+interface TreeNode {
+  session: SessionSummary;
+  children: TreeNode[];
+}
+
 // ── Module state ─────────────────────────────────────────────────────────────
 
 interface WindowSize { width: number; height: number; }
@@ -48,6 +58,19 @@ let panelEl: HTMLElement | null = null;
 let _isOpen = false;
 let savedSize: WindowSize | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Last successful fetch — lets a caret toggle re-render without a network call.
+ * Updated on every successful invoke('get_sessions').
+ */
+let lastSessions: SessionSummary[] = [];
+
+/**
+ * Set of node ids the user has explicitly collapsed.
+ * Absence = expanded, so newly-arrived nodes always default to visible.
+ * Keyed by the stable `id` field so state survives the 5s re-poll DOM rebuild.
+ */
+const collapsed = new Set<string>();
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -147,6 +170,25 @@ function buildPanel(root: HTMLElement): void {
   root.querySelector<HTMLButtonElement>('#sessions-close-btn')
     ?.addEventListener('click', () => close());
 
+  // Delegated caret-click listener on the list container.
+  // Reads data-caret-node-id from the clicked button, toggles it in `collapsed`,
+  // and re-renders from the cached lastSessions — no network call.
+  // The caret is a <button>, which the existing drag-to-move handler already skips
+  // via `target.closest('button') !== null`.
+  const listEl = root.querySelector<HTMLElement>('#sessions-list');
+  listEl?.addEventListener('click', (e: MouseEvent) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-caret-node-id]');
+    if (!btn) return;
+    const nodeId = btn.dataset.caretNodeId;
+    if (!nodeId) return;
+    if (collapsed.has(nodeId)) {
+      collapsed.delete(nodeId);
+    } else {
+      collapsed.add(nodeId);
+    }
+    renderFromCache();
+  });
+
   // Drag-to-move: left-click drag anywhere on the panel except interactive
   // elements — mirrors the main overlay card so the window can be repositioned
   // from this view too.
@@ -176,15 +218,95 @@ async function renderSessions(): Promise<void> {
     return;
   }
 
+  // Cache for caret-toggle re-renders (no second network call)
+  lastSessions = sessions;
+
   if (sessions.length === 0) {
     listEl.innerHTML = `<div class="sessions-empty">No active sessions</div>`;
     return;
   }
 
-  listEl.innerHTML = sessions.map((s) => renderSessionRow(s)).join('');
+  listEl.innerHTML = buildForestHtml(sessions);
 }
 
-function renderSessionRow(s: SessionSummary): string {
+/** Re-render from the cached last fetch — called on caret toggle, no network call. */
+function renderFromCache(): void {
+  if (!panelEl) return;
+  const listEl = panelEl.querySelector<HTMLElement>('#sessions-list');
+  if (!listEl) return;
+  if (lastSessions.length === 0) {
+    listEl.innerHTML = `<div class="sessions-empty">No active sessions</div>`;
+    return;
+  }
+  listEl.innerHTML = buildForestHtml(lastSessions);
+}
+
+/**
+ * Build the full tree HTML from a flat session list.
+ *
+ * Algorithm:
+ *  1. Index all nodes into a Map<id, TreeNode>.
+ *  2. Link each node under its parentId's node; nodes with no present parent
+ *     become roots (orphan → root), so the tree is never broken by a missing
+ *     ancestor.
+ *  3. Sort roots and each sibling group by lastActive descending.
+ *  4. Render recursively, guarded by a visited set and a depth cap.
+ */
+function buildForestHtml(sessions: SessionSummary[]): string {
+  // Step 1: index
+  const nodeMap = new Map<string, TreeNode>();
+  for (const s of sessions) {
+    nodeMap.set(s.id, { session: s, children: [] });
+  }
+
+  // Step 2: link — parent absent or parentId null → root
+  const roots: TreeNode[] = [];
+  for (const s of sessions) {
+    const node = nodeMap.get(s.id)!;
+    if (s.parentId !== null && s.parentId !== undefined && nodeMap.has(s.parentId)) {
+      nodeMap.get(s.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  // Step 3: sort siblings by lastActive descending
+  const byLastActiveDesc = (a: TreeNode, b: TreeNode): number =>
+    new Date(b.session.lastActive).getTime() - new Date(a.session.lastActive).getTime();
+
+  roots.sort(byLastActiveDesc);
+  for (const node of nodeMap.values()) {
+    if (node.children.length > 1) {
+      node.children.sort(byLastActiveDesc);
+    }
+  }
+
+  // Step 4: render
+  const visited = new Set<string>();
+  return roots.map((r) => renderNode(r, 0, visited)).join('');
+}
+
+/**
+ * Render one tree node and its subtree as an HTML string.
+ *
+ * Each row = a caret cell (▾/▸ or invisible spacer for leaf rows so alignment
+ * is preserved) followed by the existing session-meta content (active dot,
+ * project, agentName, model · relTime) and a session-tokens line below.
+ * Children are wrapped in a .session-children container (indent + guide line)
+ * and omitted entirely when the node is collapsed.
+ *
+ * Guards: visited Set prevents infinite loops on accidental cycles; depth cap
+ * at 20 prevents stack overflow on pathological data.
+ */
+function renderNode(node: TreeNode, depth: number, visited: Set<string>): string {
+  const { session: s } = node;
+  if (visited.has(s.id) || depth > 20) return '';
+  visited.add(s.id);
+
+  const hasChildren = node.children.length > 0;
+  const isCollapsed = collapsed.has(s.id);
+
+  // Per-node display values — same info as the previous flat row
   const relTime = formatRelativeTime(s.lastActive);
   const total = formatTokenCount(s.totalTokens);
   const inp = formatTokenCount(s.inputTokens);
@@ -199,14 +321,29 @@ function renderSessionRow(s: SessionSummary): string {
     ? '<span class="session-active-dot" title="Active"></span>'
     : '';
 
-  return `
-    <div class="session-row">
-      <div class="session-meta">
-        ${activeDot}<span class="session-project">${escapeHtml(s.project)}</span>${agentName}<span class="session-secondary">${modelPrefix}${relTime}</span>
-      </div>
-      <div class="session-tokens">Total ${total} · in ${inp} · out ${out} · cache ${cache}</div>
-    </div>
-  `;
+  // Caret for parents; invisible same-width spacer for leaf rows (keeps column aligned)
+  const safeId = escapeHtml(s.id);
+  const caret = hasChildren
+    ? `<button class="session-caret" data-caret-node-id="${safeId}">${isCollapsed ? '&#9658;' : '&#9660;'}</button>`
+    : `<span class="session-caret leaf"></span>`;
+
+  // Children block — omitted (not just hidden) when collapsed so DOM stays lean
+  const childrenHtml = hasChildren && !isCollapsed
+    ? `<div class="session-children">${node.children.map((c) => renderNode(c, depth + 1, visited)).join('')}</div>`
+    : '';
+
+  return (
+    `<div class="session-row" data-node-id="${safeId}" data-depth="${depth}">` +
+      `<div class="session-meta">` +
+        `${caret}${activeDot}` +
+        `<span class="session-project">${escapeHtml(s.project)}</span>` +
+        `${agentName}` +
+        `<span class="session-secondary">${modelPrefix}${relTime}</span>` +
+      `</div>` +
+      `<div class="session-tokens">Total ${total} · in ${inp} · out ${out} · cache ${cache}</div>` +
+    `</div>` +
+    childrenHtml
+  );
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
