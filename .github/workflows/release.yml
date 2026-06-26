@@ -250,7 +250,9 @@ jobs:
 
           # Existing draft body = the static Downloads/install template that the
           # Windows job set via tauri-action's releaseBody.
-          gh release view "$TAG" --json body --jq .body > existing.md
+          # --repo is required: this job has no checkout, so gh cannot infer the
+          # repository from a local git remote.
+          gh release view "$TAG" --repo "$REPO" --json body --jq .body > existing.md
 
           # Compose: generated notes on top, the template kept verbatim below.
           {
@@ -259,5 +261,5 @@ jobs:
             cat existing.md
           } > final.md
 
-          gh release edit "$TAG" --notes-file final.md
+          gh release edit "$TAG" --repo "$REPO" --notes-file final.md
           echo "Release body updated for $TAG."
