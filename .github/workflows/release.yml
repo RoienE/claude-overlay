@@ -218,3 +218,46 @@ jobs:
           prerelease: false
           # Build universal binary; skip beforeBuildCommand (prebuilt dist present).
           args: --target universal-apple-darwin --config '{"build":{"beforeBuildCommand":""}}'
+
+  # ── 4. Generate PR-based release notes and PREPEND them to the release body ─
+  release-notes:
+    name: Generate release notes
+    runs-on: ubuntu-latest
+    needs: [windows, macos]
+    permissions:
+      contents: write # required to read and edit the (draft) release body
+
+    steps:
+      - name: Generate and prepend native release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.windows.outputs.releaseId }}
+        run: |
+          set -euo pipefail
+
+          # Resolve the tag from the draft release the Windows job created.
+          # Robust for both tag-push and workflow_dispatch triggers.
+          TAG=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq .tag_name)
+          echo "Release tag: $TAG"
+
+          # Native auto-generated notes built from merged-PR titles in the tag
+          # range. GitHub auto-detects the previous tag and applies the grouping
+          # rules in .github/release.yml. Output already includes a "What's
+          # Changed" heading and a "Full Changelog" compare link.
+          gh api -X POST "repos/$REPO/releases/generate-notes" \
+            -f tag_name="$TAG" --jq .body > generated.md
+
+          # Existing draft body = the static Downloads/install template that the
+          # Windows job set via tauri-action's releaseBody.
+          gh release view "$TAG" --json body --jq .body > existing.md
+
+          # Compose: generated notes on top, the template kept verbatim below.
+          {
+            cat generated.md
+            printf '\n\n---\n\n'
+            cat existing.md
+          } > final.md
+
+          gh release edit "$TAG" --notes-file final.md
+          echo "Release body updated for $TAG."
