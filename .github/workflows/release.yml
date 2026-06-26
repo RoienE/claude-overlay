@@ -139,8 +139,7 @@ jobs:
             ### Windows
             | Installer | File | Notes |
             |-----------|------|-------|
-            | NSIS (recommended) | `claude-overlay_<version>_x64-setup.exe` | Guided installer, installs to user profile |
-            | WiX MSI | `claude-overlay_<version>_x64_en-US.msi` | For managed/enterprise deployments |
+            | NSIS | `claude-overlay_<version>_x64-setup.exe` | Guided installer, installs to user profile; auto-updates to future releases |
 
             **First launch:** this build is not code-signed. Windows SmartScreen may
             show a "Windows protected your PC" warning. Click **More info** then

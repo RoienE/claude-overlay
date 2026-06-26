@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   checkForUpdates({ interactive: false }).catch(() => {});
   setInterval(() => {
     checkForUpdates({ interactive: false }).catch(() => {});
-  }, 6 * 60 * 60 * 1000); // every 6 hours
+  }, 2 * 60 * 60 * 1000); // every 2 hours
 
   // Provide the opacity change callback so the slider updates the card immediately.
   setOpacityCallback((val: number) => {

@@ -20,8 +20,11 @@ Built with [Tauri 2](https://tauri.app) (Rust core + vanilla TypeScript WebView 
 - Adaptive polling: fast during active sessions, idle-paused when locked/idle
 - Plan badge (Free / Pro / Max 5× / Max 20×) from the profile endpoint
 - Right-click context menu: opacity slider, size presets, plan override, refresh, quit
-- Settings page: opacity slider, size presets, refresh, quit
+- Settings page: opacity slider, size presets, check for updates, refresh, quit
 - Tray icon + taskbar presence; click the tray icon to toggle show/hide
+- Automatic updates: checks GitHub Releases on launch and every 2 hours, prompts to install
+  signed updates (NSIS installer), and falls back to opening the release page if a silent
+  install is blocked. Running version is shown in the overlay's bottom-right corner
 - Graceful degradation: falls back to local JSONL transcript estimates when the API is unavailable
 
 ---
@@ -107,7 +110,7 @@ pnpm tauri:build
 
 | Platform | Output location |
 |---|---|
-| Windows | `src-tauri/target/release/bundle/nsis/*.exe` (or `.msi`) |
+| Windows | `src-tauri/target/release/bundle/nsis/*.exe` |
 | macOS | `src-tauri/target/release/bundle/macos/*.app` and `bundle/dmg/*.dmg` |
 
 > **First `cargo build` can take 5–10 minutes** — Rust compiles all dependencies
@@ -178,10 +181,13 @@ WebView UI (src/)
   main.ts              — bootstrap, Tauri event subscription
   store.ts             — snapshot state store
   countdown.ts         — 1-second local countdown tickers
+  updater.ts           — auto-update check + install via GitHub Releases (tauri-plugin-updater)
   components/
     usage-card.ts      — full card renderer (differential DOM updates)
     window-bar.ts      — single quota bar + countdown row
     context-menu.ts    — right-click menu (opacity, size, plan override, quit)
+    settings-panel.ts  — settings view (opacity, size, check for updates, quit)
+    version-label.ts   — version badge in the overlay/settings footer
 ```
 
 ---
@@ -244,6 +250,7 @@ formatting, and credential parsing.
 
 - [x] Persist opacity across restarts (settings.json in app config dir; size/position remain future work)
 - [x] macOS port — Keychain credential source, transparent overlay via `macOSPrivateApi`, `.app`/`.dmg` bundle
+- [x] Automatic updates from GitHub Releases — signed `tauri-plugin-updater`, in-app prompt, NSIS installer
 - [ ] Native macOS idle detection (adaptive polling works on macOS, but the idle-pause feature that
       suspends polling after 5 min of OS inactivity is Windows-only for now)
 - [ ] Signed and notarized macOS builds for distribution (requires Apple Developer ID; local/dev
