@@ -56,6 +56,8 @@ export interface Settings {
   size_preset: string;
   /** null = auto-detect; "free"|"pro"|"max5x"|"max20x"|"max" = override */
   plan_override: string | null;
+  /** How far back (in minutes) the Sessions tracker considers a session "recent". */
+  history_threshold_mins: number;
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────────

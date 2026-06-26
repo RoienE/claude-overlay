@@ -4,9 +4,11 @@
 //! one `SessionSummary` per file rather than rolling aggregates.  It groups
 //! files by *family* (the root top-level session + all its sub-agents) and only
 //! processes families where at least one file has been modified within
-//! `ACTIVE_THRESHOLD_MINS` minutes.  Within a live family every node is
-//! emitted (active children and stale ancestors alike), so the tree is never
-//! broken by an idle orchestrator.
+//! `threshold_mins` minutes (caller-supplied, default 30).  Within a live family
+//! the result is **pruned**: a node is included only if its own subtree contains
+//! at least one active node (mtime within threshold).  Active nodes and their
+//! ancestors are kept (tree stays connected); stale leaf sub-agents with no
+//! active descendants are dropped.
 //!
 //! ## Node identity and parentage
 //!
@@ -37,17 +39,13 @@
 //! root, so all nodes in a family show the same project name.
 
 use chrono::{DateTime, Duration, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::fallback_logs::{claude_dir, collect_jsonl_files, JsRecord};
 use crate::model::SessionSummary;
-
-/// Files whose mtime is older than this many minutes cause a family to be
-/// skipped (unless another file in the family is fresh).
-const ACTIVE_THRESHOLD_MINS: i64 = 10;
 
 // ── Internal data types ───────────────────────────────────────────────────────
 
@@ -451,19 +449,64 @@ fn extract_agent_id(text: &str) -> Option<String> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Return session summaries for all nodes in *live* families (families where at
-/// least one transcript was modified within `ACTIVE_THRESHOLD_MINS`).
+/// Compute the set of node ids to include for a family, applying the subtree-prune rule.
 ///
-/// Stale ancestors of active nodes are included with `active: false` so the
-/// tree is never broken.  Results are sorted by `last_active` descending.
-pub fn list_active() -> Vec<SessionSummary> {
+/// `nodes` is a slice of `(node_id, parent_id, active)` triples for all nodes in a
+/// single family.  A node is included iff its own subtree contains at least one active
+/// node (i.e. the node itself is active, or it is an ancestor of an active node).
+///
+/// Ancestor walks are capped at 20 hops to guard against cycles in parent links.
+/// The walk also stops when a parent id is not present in the family node set.
+pub(crate) fn compute_included(nodes: &[(String, Option<String>, bool)]) -> HashSet<String> {
+    const MAX_ANCESTOR_HOPS: usize = 20;
+
+    // Build id → parent_id lookup for the family.
+    let parent_map: HashMap<&str, Option<&str>> = nodes
+        .iter()
+        .map(|(id, pid, _)| (id.as_str(), pid.as_deref()))
+        .collect();
+
+    let mut include: HashSet<String> = HashSet::new();
+
+    for (id, _, active) in nodes {
+        if !active {
+            continue;
+        }
+        // Seed the active node itself.
+        include.insert(id.clone());
+        // Walk its ancestor chain upward, inserting each ancestor.
+        let mut current = id.as_str();
+        for _ in 0..MAX_ANCESTOR_HOPS {
+            let parent = match parent_map.get(current) {
+                Some(Some(p)) => *p,
+                _ => break, // no parent or parent is None (root node)
+            };
+            if !parent_map.contains_key(parent) {
+                break; // parent not in this family — stop
+            }
+            include.insert(parent.to_string());
+            current = parent;
+        }
+    }
+
+    include
+}
+
+/// Return session summaries for nodes in *live* families (families where at
+/// least one transcript was modified within `threshold_mins`).
+///
+/// Within each live family the result is pruned: a node is included only if
+/// its own subtree contains at least one active node.  Active nodes and their
+/// ancestors are kept (tree stays connected); stale leaf sub-agents with no
+/// active descendants are dropped.  Results are sorted by `last_active` descending.
+pub fn list_active(threshold_mins: i64) -> Vec<SessionSummary> {
     let Some(base) = claude_dir() else {
         return vec![];
     };
 
     let files = collect_jsonl_files(&base);
     let now = Utc::now();
-    let cutoff = now - Duration::minutes(ACTIVE_THRESHOLD_MINS);
+    let cutoff = now - Duration::minutes(threshold_mins);
 
     // Group every transcript file by its family root path.
     let mut families: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
@@ -504,6 +547,9 @@ pub fn list_active() -> Vec<SessionSummary> {
             } else {
                 None
             };
+
+        // Build all node records for this family first, then prune.
+        let mut family_summaries: Vec<SessionSummary> = Vec::new();
 
         for path in family_files {
             let file_is_active = file_mtime(path)
@@ -549,7 +595,7 @@ pub fn list_active() -> Vec<SessionSummary> {
                 + stats.cache_creation
                 + stats.cache_read;
 
-            sessions.push(SessionSummary {
+            family_summaries.push(SessionSummary {
                 session_id,
                 id: node_id,
                 parent_id,
@@ -564,6 +610,19 @@ pub fn list_active() -> Vec<SessionSummary> {
                 total_tokens,
                 active: file_is_active,
             });
+        }
+
+        // Prune: keep only nodes whose subtree contains at least one active node.
+        let include_tuples: Vec<(String, Option<String>, bool)> = family_summaries
+            .iter()
+            .map(|s| (s.id.clone(), s.parent_id.clone(), s.active))
+            .collect();
+        let include = compute_included(&include_tuples);
+
+        for summary in family_summaries {
+            if include.contains(&summary.id) {
+                sessions.push(summary);
+            }
         }
     }
 
@@ -783,5 +842,73 @@ mod tests {
     fn extract_agent_id_empty_run_returns_none() {
         // "agentId:" followed by non-alphanumeric only
         assert_eq!(extract_agent_id("agentId: !!!"), None);
+    }
+
+    // ── compute_included (prune / subtree logic) ─────────────────────────────
+
+    fn node(id: &str, parent: Option<&str>, active: bool) -> (String, Option<String>, bool) {
+        (id.to_string(), parent.map(|s| s.to_string()), active)
+    }
+
+    #[test]
+    fn prune_root_stale_suba_active_both_included() {
+        // root(stale) → subA(active): both must be included (root is ancestor).
+        let nodes = vec![node("root", None, false), node("subA", Some("root"), true)];
+        let include = compute_included(&nodes);
+        assert!(include.contains("root"), "root (stale ancestor) must be included");
+        assert!(include.contains("subA"), "subA (active) must be included");
+        assert_eq!(include.len(), 2);
+    }
+
+    #[test]
+    fn prune_stale_sibling_leaf_excluded() {
+        // root(stale) → subA(active), subB(stale leaf): subB excluded.
+        let nodes = vec![
+            node("root", None, false),
+            node("subA", Some("root"), true),
+            node("subB", Some("root"), false),
+        ];
+        let include = compute_included(&nodes);
+        assert!(include.contains("root"), "root must be included (ancestor of active subA)");
+        assert!(include.contains("subA"), "subA (active) must be included");
+        assert!(!include.contains("subB"), "subB (stale leaf) must be excluded");
+        assert_eq!(include.len(), 2);
+    }
+
+    #[test]
+    fn prune_active_grandchild_pulls_in_all_ancestors() {
+        // root(stale) → subA(stale) → grandchild(active): all three included.
+        let nodes = vec![
+            node("root", None, false),
+            node("subA", Some("root"), false),
+            node("grandchild", Some("subA"), true),
+        ];
+        let include = compute_included(&nodes);
+        assert!(include.contains("root"), "root must be included (ancestor)");
+        assert!(include.contains("subA"), "subA must be included (ancestor)");
+        assert!(include.contains("grandchild"), "grandchild (active) must be included");
+        assert_eq!(include.len(), 3);
+    }
+
+    #[test]
+    fn prune_all_stale_yields_empty_include() {
+        // Family with every node stale: empty include set.
+        let nodes = vec![
+            node("root", None, false),
+            node("subA", Some("root"), false),
+            node("subB", Some("root"), false),
+        ];
+        let include = compute_included(&nodes);
+        assert!(include.is_empty(), "all-stale family must yield empty include set");
+    }
+
+    #[test]
+    fn prune_cycle_in_parent_links_does_not_loop_forever() {
+        // A → B → A (cycle): must terminate within hop cap.
+        let nodes = vec![node("A", Some("B"), true), node("B", Some("A"), false)];
+        // Just verify it returns without hanging; both reachable via the cycle.
+        let include = compute_included(&nodes);
+        assert!(include.contains("A"), "active node A must be included");
+        assert!(include.contains("B"), "ancestor B (reachable within hop cap) must be included");
     }
 }

@@ -47,6 +47,7 @@ let currentSettings = {
   opacity: 0.92,
   size_preset: 'default',
   plan_override: null as string | null,
+  history_threshold_mins: 30,
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ export function setCurrentSettings(settings: {
   opacity: number;
   size_preset: string;
   plan_override: string | null;
+  history_threshold_mins: number;
 }): void {
   currentSettings = { ...settings };
   if (_isOpen) syncControls();
@@ -164,6 +166,16 @@ function buildPanel(root: HTMLElement): void {
           <button class="settings-opt" data-size="medium">Medium</button>
           <button class="settings-opt" data-size="large">Large</button>
           <button class="settings-opt" data-size="default">Default</button>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">History</div>
+        <div class="settings-seg" id="history-seg">
+          <button class="settings-opt" data-mins="15">15m</button>
+          <button class="settings-opt" data-mins="30">30m</button>
+          <button class="settings-opt" data-mins="60">1h</button>
+          <button class="settings-opt" data-mins="180">3h</button>
         </div>
       </div>
 
@@ -234,6 +246,17 @@ function buildPanel(root: HTMLElement): void {
     });
   });
 
+  // ── History segmented control ─────────────────────────────────────────────
+  const historySeg = root.querySelector<HTMLElement>('#history-seg');
+  historySeg?.querySelectorAll<HTMLButtonElement>('[data-mins]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const minutes = parseInt(btn.dataset.mins!, 10);
+      invoke('set_history_threshold', { minutes }).catch(console.error);
+      setActive(historySeg, btn);
+      currentSettings.history_threshold_mins = minutes;
+    });
+  });
+
   // ── Plan segmented control ────────────────────────────────────────────────
   const planSeg = root.querySelector<HTMLElement>('#plan-seg');
   planSeg?.querySelectorAll<HTMLButtonElement>('[data-plan]').forEach((btn) => {
@@ -294,6 +317,17 @@ function syncControls(): void {
     );
     sizeSeg.querySelectorAll<HTMLButtonElement>('.settings-opt').forEach((b) => {
       b.classList.toggle('active', b === activeSize);
+    });
+  }
+
+  // History
+  const historySeg = panelEl.querySelector<HTMLElement>('#history-seg');
+  if (historySeg) {
+    const activeHistory = historySeg.querySelector<HTMLButtonElement>(
+      `[data-mins="${currentSettings.history_threshold_mins}"]`
+    );
+    historySeg.querySelectorAll<HTMLButtonElement>('.settings-opt').forEach((b) => {
+      b.classList.toggle('active', b === activeHistory);
     });
   }
 

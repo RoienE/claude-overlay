@@ -230,11 +230,28 @@ pub async fn quit_app(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Set the recency window for the active sessions tracker.
+///
+/// `minutes` is clamped to 5–720.  Persists to settings; best-effort (a write
+/// failure is logged but does not fail the command).
+#[tauri::command]
+pub async fn set_history_threshold(app: AppHandle, minutes: u32) -> Result<(), String> {
+    let minutes = settings::clamp_history_threshold(minutes);
+    let mut s = settings::load(&app);
+    s.history_threshold_mins = minutes;
+    if let Err(e) = settings::save(&app, &s) {
+        log::warn!("Failed to save history_threshold_mins setting: {e}");
+    }
+    Ok(())
+}
+
 /// Return active session summaries parsed from local Claude Code JSONL transcripts.
 ///
-/// Only sessions whose JSONL file was modified within the last 10 minutes are
+/// Only sessions whose JSONL file was modified within the configurable history
+/// threshold (default 30 minutes, adjustable via `set_history_threshold`) are
 /// included.  Results are sorted by `lastActive` descending (most recent first).
 #[tauri::command]
-pub async fn get_sessions() -> Vec<crate::model::SessionSummary> {
-    crate::sessions::list_active()
+pub async fn get_sessions(app: AppHandle) -> Vec<crate::model::SessionSummary> {
+    let threshold = settings::load(&app).history_threshold_mins;
+    crate::sessions::list_active(threshold as i64)
 }

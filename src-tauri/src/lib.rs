@@ -193,6 +193,7 @@ pub fn run() {
             window_ctl::get_window_size,
             window_ctl::set_window_size,
             window_ctl::get_sessions,
+            window_ctl::set_history_threshold,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
