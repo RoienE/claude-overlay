@@ -1,0 +1,25 @@
+# Controls GitHub's automatically-generated release notes (the "What's Changed"
+# list built from merged-PR titles). Consumed by the generate-notes API call in
+# .github/workflows/release.yml. Categories are matched top-down by PR label.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: ✨ Features
+      labels:
+        - enhancement
+        - feature
+    - title: 🐛 Fixes
+      labels:
+        - bug
+        - fix
+    - title: 🧰 Maintenance & Docs
+      labels:
+        - chore
+        - ci
+        - docs
+        - dependencies
+    - title: Other Changes
+      labels:
+        - "*" # catch-all so unlabeled PRs are still listed
