@@ -128,7 +128,7 @@ if (noGit) {
 }
 
 git(['add', 'package.json', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json']);
-git(['commit', '-m', `chore: release ${tag}`]);
+git(['commit', '-m', `Release ${tag}`]);
 git(['tag', '-a', tag, '-m', tag]);
 
 console.log(`\n✓ Committed and tagged ${tag}.`);
