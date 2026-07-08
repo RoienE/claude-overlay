@@ -5,7 +5,7 @@
 A lightweight, always-on-top desktop widget that displays live Claude subscription usage: plan
 type, 5-hour session window, weekly quotas, model-specific limits, and reset countdowns.
 
-Supported platforms: **Windows 11** and **macOS 11.0+ (Big Sur)**.
+Supported platforms: **Windows 11**, **macOS 11.0+ (Big Sur)**, and **Linux (x86_64)**.
 
 Built with [Tauri 2](https://tauri.app) (Rust core + vanilla TypeScript WebView UI).
 
@@ -23,8 +23,10 @@ Built with [Tauri 2](https://tauri.app) (Rust core + vanilla TypeScript WebView 
 - Settings page: opacity slider, size presets, check for updates, refresh, quit
 - Tray icon + taskbar presence; click the tray icon to toggle show/hide
 - Automatic updates: checks GitHub Releases on launch and every 2 hours, prompts to install
-  signed updates (NSIS installer), and falls back to opening the release page if a silent
-  install is blocked. Running version is shown in the overlay's bottom-right corner
+  signed updates (NSIS installer on Windows, DMG on macOS, AppImage on Linux), and falls back
+  to opening the release page if a silent install is blocked or unsupported (Linux `.deb`/`.rpm`
+  installs always update via the releases page). Running version is shown in the overlay's
+  bottom-right corner
 - Graceful degradation: falls back to local JSONL transcript estimates when the API is unavailable
 
 ---
@@ -81,12 +83,34 @@ Available in the **[screenshots/](./screenshots/)** folder.
    (not a plaintext file). The app reads the token from the Keychain automatically; no
    manual configuration is needed.
 
+#### Linux
+
+1. **Rust toolchain (stable)** — install from https://rustup.rs
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   rustup update stable
+   ```
+2. **Node.js v18+** — https://nodejs.org (v22 LTS recommended), plus **pnpm**
+   (`npm i -g pnpm` or `corepack enable pnpm`).
+3. **Tauri v2 prerequisites for Linux** (Debian/Ubuntu package names; adjust for your
+   distro) — WebKitGTK, build tools, and the libraries needed to bundle `.deb`/`.rpm`/
+   `.AppImage`:
+   ```sh
+   sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+     libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+   ```
+4. **Tauri CLI v2** — installed automatically via `pnpm install` (devDependency; no
+   global install needed).
+5. A working **Claude Code** installation, logged in (supplies the OAuth token at
+   `~/.claude/.credentials.json`, same as on Windows; the `CLAUDE_CONFIG_DIR`
+   environment variable is respected if you use a non-default config location).
+
 > **Cannot compile Rust?** — The frontend (TypeScript/Vite) can be built and verified
 > independently on any platform with `pnpm install && pnpm build`.
 
 ### Build & Run
 
-The build commands are identical on Windows and macOS:
+The build commands are identical on Windows, macOS, and Linux:
 
 ```sh
 # 1. Install frontend dependencies (also installs the Tauri CLI)
@@ -112,6 +136,7 @@ pnpm tauri:build
 |---|---|
 | Windows | `src-tauri/target/release/bundle/nsis/*.exe` |
 | macOS | `src-tauri/target/release/bundle/macos/*.app` and `bundle/dmg/*.dmg` |
+| Linux | `src-tauri/target/release/bundle/deb/*.deb`, `bundle/rpm/*.rpm`, and `bundle/appimage/*.AppImage` |
 
 > **First `cargo build` can take 5–10 minutes** — Rust compiles all dependencies
 > from source. Subsequent builds are fast (incremental).
@@ -146,6 +171,46 @@ approach:
 Subsequent launches open normally once you have allowed it once.
 
 **Minimum supported macOS:** 11.0 (Big Sur).
+
+#### Linux
+
+**Installing:** unlike Windows/macOS, there is no code-signing gate to bypass — install
+the package for your distro directly:
+
+```sh
+# Debian/Ubuntu
+sudo apt install ./claude-overlay_*.deb
+
+# Fedora/RHEL
+sudo dnf install ./claude-overlay-*.rpm
+
+# AppImage (any distro)
+chmod +x claude-overlay_*.AppImage
+./claude-overlay_*.AppImage
+```
+
+**Credentials:** the app reads `~/.claude/.credentials.json` automatically (same file
+Claude Code uses on Linux). No configuration needed — if Claude Code is logged in, the
+widget shows your live usage. If Claude Code uses a non-default config directory, set
+`CLAUDE_CONFIG_DIR` before launching and the app will follow it.
+
+**Runtime caveats on Linux:**
+
+- **Tray icon on vanilla GNOME:** GNOME Shell doesn't render AppIndicator tray icons
+  without the **AppIndicator/KStatusNotifierItem** Shell extension installed and enabled;
+  the `.deb`/`.rpm` packages pull in `libayatana-appindicator3`, but the GNOME Shell
+  extension itself is a separate, user-side install.
+- **Transparency:** the translucent overlay card requires a compositor (works out of the
+  box on GNOME/KDE); bare X11 window managers without a compositor may render it opaque.
+- **Always-on-top / taskbar hiding:** `alwaysOnTop` and `skipTaskbar` are window-manager
+  hints, not guarantees — not every WM honors them, and behavior varies further on
+  Wayland.
+- **Idle-pause:** the idle-pause-on-lock polling optimization is Windows-only for now; on
+  Linux (and macOS) the widget keeps polling at its normal cadence and never pauses on
+  idle.
+- **AppImage glibc floor:** the AppImage is built on Ubuntu 24.04 and requires glibc
+  2.39+ (Ubuntu 24.04+, Fedora 40+, Debian 13+, or equivalent). Older distros should use
+  the `.deb`/`.rpm` package for their release instead.
 
 ---
 
@@ -225,7 +290,7 @@ Use at your own discretion.
 
 ## Development
 
-These commands work on both Windows (PowerShell) and macOS (Terminal/zsh):
+These commands work the same on Windows (PowerShell), macOS, and Linux (Terminal/bash/zsh):
 
 ```sh
 # TypeScript type-check only (no Rust needed)
@@ -253,6 +318,8 @@ formatting, and credential parsing.
 - [x] Automatic updates from GitHub Releases — signed `tauri-plugin-updater`, in-app prompt, NSIS installer
 - [ ] Native macOS idle detection (adaptive polling works on macOS, but the idle-pause feature that
       suspends polling after 5 min of OS inactivity is Windows-only for now)
+- [ ] Linux idle detection (D-Bus/X11) — same idle-pause gap as macOS; polling never pauses on
+      Linux today
 - [ ] Signed and notarized macOS builds for distribution (requires Apple Developer ID; local/dev
       builds run unsigned with a Gatekeeper right-click-open workaround)
 - [ ] Universal (Intel + Apple Silicon) macOS binary via `--target universal-apple-darwin`

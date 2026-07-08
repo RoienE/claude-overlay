@@ -123,10 +123,6 @@ pub async fn fetch_usage(
         Err(e) => return ApiResult::NetworkError(e.to_string()),
     };
 
-    // === DIAG-003B START (temporary — recapture live spend block; remove after) ===
-    let _ = std::fs::write(std::env::temp_dir().join("usage-diagnostic.json"), &body);
-    // === DIAG-003B END ===
-
     // Parse the usage response as a flat JSON object. We handle extra_usage
     // separately since it's nested differently.
     let raw: serde_json::Value = match serde_json::from_str(&body) {

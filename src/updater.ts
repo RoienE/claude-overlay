@@ -1,6 +1,9 @@
 /**
  * Auto-updater module — wraps @tauri-apps/plugin-updater with dialog prompts
- * and a SmartScreen-aware fallback to the GitHub releases page.
+ * and a fallback to the GitHub releases page when a silent install can't complete
+ * (e.g. Windows SmartScreen blocking the unsigned NSIS installer, or Linux `.deb`/
+ * `.rpm` installs, which the updater can't install in place and always route here;
+ * only the Linux AppImage self-updates like the Windows/macOS installers).
  *
  * Two code paths:
  *   interactive: false — silent startup / periodic check; all errors are swallowed.
@@ -20,9 +23,10 @@ export function initUpdater(): void {
  * Check for an available update and guide the user through installing it.
  *
  * Non-interactive: errors are swallowed — never shows dialogs for background checks.
- * Interactive:     install is attempted; if it fails (e.g. SmartScreen blocks the
- *                  unsigned NSIS installer), the GitHub releases page is opened and
- *                  the user is guided to run the installer manually.
+ * Interactive:     install is attempted; if it fails (e.g. Windows SmartScreen blocks
+ *                  the unsigned NSIS installer, or the platform's package format can't
+ *                  self-update, as with Linux `.deb`/`.rpm`), the GitHub releases page
+ *                  is opened and the user is guided to install the update manually.
  */
 export async function checkForUpdates({ interactive }: { interactive: boolean }): Promise<void> {
   try {
@@ -46,12 +50,13 @@ export async function checkForUpdates({ interactive }: { interactive: boolean })
       await relaunch();
     } catch {
       if (!interactive) return;
-      // Interactive fallback: SmartScreen or install failure — open the release page.
+      // Interactive fallback: SmartScreen, an unsupported package format (e.g. Linux
+      // .deb/.rpm), or any other install failure — open the release page instead.
       const { open } = await import('@tauri-apps/plugin-shell');
       await open('https://github.com/RoienE/claude-overlay/releases/latest');
       await message(
-        "Automatic update couldn't complete. The download page has opened — run the " +
-        "installer and choose 'More info' → 'Run anyway' to finish updating.",
+        "Automatic update couldn't complete. The releases page has been opened — " +
+        "download and install the latest version for your platform.",
         { title: 'Finish update manually', kind: 'warning' },
       );
     }

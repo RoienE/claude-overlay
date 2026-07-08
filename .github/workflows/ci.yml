@@ -8,6 +8,7 @@ name: CI (Rust cache warmer)
 # shared-key values MUST stay in sync with release.yml:
 #   Windows: release-windows
 #   macOS:   release-macos
+#   Linux:   release-linux
 #
 # Path filter: only run when Rust sources, lockfiles, or this workflow change
 # to avoid spending macOS/Windows minutes on frontend-only commits.
@@ -45,6 +46,8 @@ jobs:
             rust-cache-key: release-windows
           - os: macos-14
             rust-cache-key: release-macos
+          - os: ubuntu-24.04
+            rust-cache-key: release-linux
 
     runs-on: ${{ matrix.os }}
 
@@ -64,6 +67,15 @@ jobs:
       - name: Add Rust targets for universal binary (macOS only)
         if: matrix.os == 'macos-14'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        # No patchelf/xdg-utils — this warmer builds with --no-bundle, so
+        # AppImage bundling tools aren't needed here.
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
