@@ -664,6 +664,7 @@ mod tests {
     /// with `cwd = C:\A\B\claude-overlay\src-tauri`
     ///
     /// Expected: `"claude-overlay"`.
+    #[cfg(windows)]
     #[test]
     fn project_root_name_subagent_in_subfolder() {
         let transcript = Path::new(
@@ -674,7 +675,20 @@ mod tests {
         assert_eq!(result, Some("claude-overlay".to_string()));
     }
 
+    /// POSIX equivalent of `project_root_name_subagent_in_subfolder` — runs on
+    /// both Windows and Linux since `/` is a valid separator on both.
+    #[test]
+    fn project_root_name_subagent_in_subfolder_posix() {
+        let transcript = Path::new(
+            "/home/test/.claude/projects/-home-a-b-claude-overlay/abc123/subagents/agent-x.jsonl",
+        );
+        let result =
+            project_root_name(transcript, Some("/home/a/b/claude-overlay/src-tauri"));
+        assert_eq!(result, Some("claude-overlay".to_string()));
+    }
+
     /// Root session with cwd exactly at the project root.
+    #[cfg(windows)]
     #[test]
     fn project_root_name_root_session_at_root() {
         let transcript = Path::new(
@@ -684,7 +698,18 @@ mod tests {
         assert_eq!(result, Some("claude-overlay".to_string()));
     }
 
+    /// POSIX equivalent of `project_root_name_root_session_at_root`.
+    #[test]
+    fn project_root_name_root_session_at_root_posix() {
+        let transcript = Path::new(
+            "/home/test/.claude/projects/-home-a-b-claude-overlay/abc123.jsonl",
+        );
+        let result = project_root_name(transcript, Some("/home/a/b/claude-overlay"));
+        assert_eq!(result, Some("claude-overlay".to_string()));
+    }
+
     /// No cwd → `None`.
+    #[cfg(windows)]
     #[test]
     fn project_root_name_no_cwd_returns_none() {
         let transcript = Path::new(
@@ -693,7 +718,17 @@ mod tests {
         assert_eq!(project_root_name(transcript, None), None);
     }
 
+    /// POSIX equivalent of `project_root_name_no_cwd_returns_none`.
+    #[test]
+    fn project_root_name_no_cwd_returns_none_posix() {
+        let transcript = Path::new(
+            "/home/test/.claude/projects/-home-a-b-claude-overlay/abc123.jsonl",
+        );
+        assert_eq!(project_root_name(transcript, None), None);
+    }
+
     /// cwd that doesn't match any ancestor of the encoded dir → `None`.
+    #[cfg(windows)]
     #[test]
     fn project_root_name_unrelated_cwd_returns_none() {
         let transcript = Path::new(
@@ -704,8 +739,20 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    /// POSIX equivalent of `project_root_name_unrelated_cwd_returns_none`.
+    #[test]
+    fn project_root_name_unrelated_cwd_returns_none_posix() {
+        let transcript = Path::new(
+            "/home/test/.claude/projects/-home-a-b-claude-overlay/abc123.jsonl",
+        );
+        // cwd is under a completely different tree
+        let result = project_root_name(transcript, Some("/opt/other/project"));
+        assert_eq!(result, None);
+    }
+
     // ── subagent_agent_id ────────────────────────────────────────────────────
 
+    #[cfg(windows)]
     #[test]
     fn subagent_agent_id_returns_id_for_agent_file() {
         let path = Path::new(r"C:\proj\sid\subagents\agent-xyz789abc.jsonl");
@@ -715,14 +762,33 @@ mod tests {
         );
     }
 
+    /// POSIX equivalent of `subagent_agent_id_returns_id_for_agent_file`.
+    #[test]
+    fn subagent_agent_id_returns_id_for_agent_file_posix() {
+        let path = Path::new("/proj/sid/subagents/agent-xyz789abc.jsonl");
+        assert_eq!(
+            subagent_agent_id(path),
+            Some("xyz789abc".to_string())
+        );
+    }
+
+    #[cfg(windows)]
     #[test]
     fn subagent_agent_id_returns_none_for_root_session() {
         let path = Path::new(r"C:\proj\abc123.jsonl");
         assert_eq!(subagent_agent_id(path), None);
     }
 
+    /// POSIX equivalent of `subagent_agent_id_returns_none_for_root_session`.
+    #[test]
+    fn subagent_agent_id_returns_none_for_root_session_posix() {
+        let path = Path::new("/proj/abc123.jsonl");
+        assert_eq!(subagent_agent_id(path), None);
+    }
+
     // ── family_root_path ─────────────────────────────────────────────────────
 
+    #[cfg(windows)]
     #[test]
     fn family_root_path_for_subagent_is_parent_session() {
         let path = Path::new(r"C:\proj\sid123\subagents\agent-aaa.jsonl");
@@ -730,11 +796,28 @@ mod tests {
         assert_eq!(root, PathBuf::from(r"C:\proj\sid123.jsonl"));
     }
 
+    /// POSIX equivalent of `family_root_path_for_subagent_is_parent_session`.
+    #[test]
+    fn family_root_path_for_subagent_is_parent_session_posix() {
+        let path = Path::new("/proj/sid123/subagents/agent-aaa.jsonl");
+        let root = family_root_path(path);
+        assert_eq!(root, PathBuf::from("/proj/sid123.jsonl"));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn family_root_path_for_root_session_is_itself() {
         let path = Path::new(r"C:\proj\sid123.jsonl");
         let root = family_root_path(path);
         assert_eq!(root, PathBuf::from(r"C:\proj\sid123.jsonl"));
+    }
+
+    /// POSIX equivalent of `family_root_path_for_root_session_is_itself`.
+    #[test]
+    fn family_root_path_for_root_session_is_itself_posix() {
+        let path = Path::new("/proj/sid123.jsonl");
+        let root = family_root_path(path);
+        assert_eq!(root, PathBuf::from("/proj/sid123.jsonl"));
     }
 
     // ── id / parentId: top-level vs sub-agent ─────────────────────────────────

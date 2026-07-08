@@ -1,26 +1,33 @@
 name: Release
 
-# Builds Windows (NSIS + WiX) and macOS (universal DMG) installers and
-# publishes them into a SINGLE GitHub Release per v* tag.
+# Builds Windows (NSIS) and macOS (universal DMG) installers plus Linux
+# (deb/rpm/AppImage) packages and publishes them into a SINGLE GitHub Release
+# per v* tag.
 #
 # Job topology (sequential):
-#   build-frontend  →  windows  →  macos
+#   build-frontend  →  windows  →  macos  →  linux
 #
 # build-frontend: builds the OS-independent web bundle ONCE on ubuntu-latest
 #   and uploads it as the "frontend-dist" artifact.
 #
 # windows: downloads the prebuilt dist, runs tauri-action to produce
-#   *_x64-setup.exe + *_x64_en-US.msi, CREATES the draft release, and
-#   exposes releaseId as a job output.
+#   *_x64-setup.exe, CREATES the draft release, and exposes releaseId as a
+#   job output.
 #
 # macos: downloads the prebuilt dist, runs tauri-action with --target
 #   universal-apple-darwin, and APPENDS the .dmg to the SAME release via
 #   releaseId — never creates a second release.
 #
+# linux: downloads the prebuilt dist, runs tauri-action to produce
+#   .deb/.rpm/.AppImage packages, and APPENDS them to the SAME release via
+#   releaseId after macos, keeping the latest.json updater-artifact merge
+#   sequential (tauri-action merges per-platform entries into latest.json
+#   only when OS jobs append to the same release one after another).
+#
 # Rust cache strategy: each OS job uses Swatinem/rust-cache with a stable
-#   shared-key (release-windows / release-macos). A matching ci.yml cache
-#   warmer runs on default-branch pushes so tag builds restore a warm cache
-#   via GitHub Actions' default-branch fallback rule.
+#   shared-key (release-windows / release-macos / release-linux). A matching
+#   ci.yml cache warmer runs on default-branch pushes so tag builds restore a
+#   warm cache via GitHub Actions' default-branch fallback rule.
 
 on:
   push:
@@ -101,7 +108,7 @@ jobs:
           cache: pnpm
 
       # No extra Rust targets needed — default x86_64-pc-windows-msvc is correct.
-      # bundle.targets "all" in tauri.conf.json produces NSIS (.exe) + WiX (.msi).
+      # tauri.conf.json targets NSIS only on Windows, producing *_x64-setup.exe.
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -156,6 +163,17 @@ jobs:
             `xattr -dr com.apple.quarantine /Applications/claude-overlay.app`
 
             Requires macOS 11.0 (Big Sur) or later.
+
+            ### Linux
+            | Package | File | Notes |
+            |---------|------|-------|
+            | AppImage (recommended) | `claude-overlay_<version>_amd64.AppImage` | Portable — `chmod +x` then run; the only Linux format with auto-updates |
+            | Debian/Ubuntu | `claude-overlay_<version>_amd64.deb` | Install: `sudo apt install ./claude-overlay_<version>_amd64.deb` |
+            | Fedora/RHEL | `claude-overlay-<version>-1.x86_64.rpm` | Install: `sudo dnf install ./claude-overlay-<version>-1.x86_64.rpm` |
+
+            deb/rpm installs do not auto-update — grab new versions from this page. The
+            AppImage requires glibc 2.39+ (Ubuntu 24.04+, Fedora 40+, Debian 13+). On
+            GNOME, the tray icon needs the AppIndicator shell extension.
           releaseDraft: true
           prerelease: false
           # Skip beforeBuildCommand so tauri uses the downloaded dist/ directly.
@@ -219,11 +237,74 @@ jobs:
           # Build universal binary; skip beforeBuildCommand (prebuilt dist present).
           args: --target universal-apple-darwin --config '{"build":{"beforeBuildCommand":""}}'
 
-  # ── 4. Generate PR-based release notes and PREPEND them to the release body ─
+  # ── 4. Build Linux packages and APPEND to the same release ────────────────
+  linux:
+    name: Build Linux packages
+    runs-on: ubuntu-24.04 # pinned glibc baseline; ubuntu-22.04 begins deprecation Sept 2026
+    needs: [windows, macos] # windows for releaseId; macos to keep latest.json merging sequential
+    permissions:
+      contents: write # required to upload assets to the existing release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf xdg-utils
+        # webkit/gtk headers to compile; patchelf + xdg-utils for AppImage bundling.
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      # No extra Rust targets needed — default x86_64-unknown-linux-gnu is correct.
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-linux
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download prebuilt frontend
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: frontend-dist
+          path: dist/
+        # dist/ lands at repo root, matching frontendDist: "../dist" in tauri.conf.json
+
+      - name: Build and append to release (Linux)
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # action-v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # releaseId causes tauri-action to UPLOAD to the existing release
+          # instead of creating a new one. No tagName/releaseName/releaseBody
+          # here so the Windows-created body is never overwritten.
+          releaseId: ${{ needs.windows.outputs.releaseId }}
+          releaseDraft: true
+          prerelease: false
+          # Skip beforeBuildCommand (prebuilt dist present).
+          args: --config '{"build":{"beforeBuildCommand":""}}'
+
+  # ── 5. Generate PR-based release notes and PREPEND them to the release body ─
   release-notes:
     name: Generate release notes
     runs-on: ubuntu-latest
-    needs: [windows, macos]
+    needs: [windows, macos, linux]
     permissions:
       contents: write # required to read and edit the (draft) release body
 
