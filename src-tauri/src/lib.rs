@@ -8,6 +8,7 @@ pub mod plan_detector;
 pub mod poller;
 pub mod sessions;
 pub mod settings;
+pub mod telemetry;
 pub mod usage_client;
 pub mod window_ctl;
 
@@ -20,6 +21,7 @@ use tauri::{
 use tokio::sync::mpsc;
 
 use poller::{PollerState, RefreshNotify, SharedPollerState};
+use telemetry::Telemetry;
 
 /// Set the Windows AppUserModelID at process start.
 ///
@@ -132,10 +134,49 @@ pub fn run() {
 
             let _tray = tray_builder.build(app)?;
 
-            // ── Apply persisted settings at startup ───────────────────────────
-            {
-                let saved = crate::settings::load(app.handle());
+            // ── Load settings + telemetry setup ──────────────────────────────
+            let mut saved = crate::settings::load(app.handle());
 
+            // Generate a random install ID on first run; persist immediately.
+            let is_first_run = crate::settings::ensure_install_id(&mut saved);
+            if is_first_run {
+                if let Err(e) = crate::settings::save(app.handle(), &saved) {
+                    log::warn!("Failed to persist new install_id: {e}");
+                }
+            }
+
+            // Build the shared telemetry handle.
+            let telemetry = Telemetry::new(
+                crate::config::telemetry_endpoint().as_deref(),
+                crate::config::telemetry_api_key().as_deref(),
+                saved.telemetry_enabled,
+            );
+
+            // Emit install event on first run.
+            if is_first_run {
+                let install_id = saved.install_id.as_deref().unwrap_or("");
+                let app_version = env!("CARGO_PKG_VERSION");
+                telemetry.record_install(
+                    install_id,
+                    app_version,
+                    crate::telemetry::normalized_os(),
+                    crate::telemetry::normalized_arch(),
+                );
+            }
+
+            // Start the heartbeat loop (runs for the lifetime of the app).
+            telemetry.clone().spawn_heartbeat_loop(
+                saved.install_id.clone().unwrap_or_default(),
+                env!("CARGO_PKG_VERSION").to_string(),
+                crate::telemetry::normalized_os().to_string(),
+                crate::telemetry::normalized_arch().to_string(),
+            );
+
+            // Register the Telemetry handle so window_ctl commands can access it.
+            app.manage(telemetry.clone());
+
+            // ── Apply persisted settings to the window ────────────────────────
+            {
                 // Restore CSS opacity.
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.eval(&format!(
@@ -166,9 +207,10 @@ pub fn run() {
             let (tx, mut rx) = mpsc::unbounded_channel::<crate::model::UsageSnapshot>();
             let state_for_poller = poller_state.clone();
             let notify_for_poller = refresh_notify.clone();
+            let telemetry_for_poller = telemetry.clone();
 
             tauri::async_runtime::spawn(async move {
-                crate::poller::run(tx, state_for_poller, notify_for_poller).await;
+                crate::poller::run(tx, state_for_poller, notify_for_poller, telemetry_for_poller).await;
             });
 
             // ── Forward snapshots to the WebView as Tauri events ─────────────
@@ -194,6 +236,7 @@ pub fn run() {
             window_ctl::set_window_size,
             window_ctl::get_sessions,
             window_ctl::set_history_threshold,
+            window_ctl::set_telemetry_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

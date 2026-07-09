@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   // ── Apply persisted settings at startup ────────────────────────────────────
   // Fetch saved settings from the Rust backend and apply opacity so the overlay
   // starts at the persisted value rather than the CSS default (0.92).
-  invoke<Settings>('get_settings')
+  invoke<Settings & { telemetry_enabled?: boolean }>('get_settings')
     .then((settings) => {
       appEl.style.opacity = String(settings.opacity);
       // Tell the context menu so the slider opens at the right position.
@@ -68,6 +68,8 @@ async function main(): Promise<void> {
         size_preset: settings.size_preset ?? 'default',
         plan_override: settings.plan_override ?? null,
         history_threshold_mins: settings.history_threshold_mins ?? 30,
+        // Default true (opt-out): absent key (old backend) → telemetry on.
+        telemetry_enabled: settings.telemetry_enabled ?? true,
       });
     })
     .catch((err) => {

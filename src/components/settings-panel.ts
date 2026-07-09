@@ -48,6 +48,7 @@ let currentSettings = {
   size_preset: 'default',
   plan_override: null as string | null,
   history_threshold_mins: 30,
+  telemetry_enabled: true,
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -144,6 +145,7 @@ export function setCurrentSettings(settings: {
   size_preset: string;
   plan_override: string | null;
   history_threshold_mins: number;
+  telemetry_enabled: boolean;
 }): void {
   currentSettings = { ...settings };
   if (_isOpen) syncControls();
@@ -202,6 +204,15 @@ function buildPanel(root: HTMLElement): void {
       </div>
 
       <div class="settings-group">
+        <div class="settings-group-title">Privacy</div>
+        <div class="opacity-slider-label">Anonymous usage data — helps improve the app. No personal data or tokens are ever sent.</div>
+        <div class="settings-seg" id="telemetry-seg">
+          <button class="settings-opt" data-telemetry="on">On</button>
+          <button class="settings-opt" data-telemetry="off">Off</button>
+        </div>
+      </div>
+
+      <div class="settings-group">
         <div class="settings-group-title">Updates</div>
         <button class="settings-action" id="settings-check-update-btn">
           <span class="settings-action-icon"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg></span>
@@ -254,6 +265,17 @@ function buildPanel(root: HTMLElement): void {
       invoke('set_history_threshold', { minutes }).catch(console.error);
       setActive(historySeg, btn);
       currentSettings.history_threshold_mins = minutes;
+    });
+  });
+
+  // ── Telemetry segmented control ───────────────────────────────────────────
+  const telemetrySeg = root.querySelector<HTMLElement>('#telemetry-seg');
+  telemetrySeg?.querySelectorAll<HTMLButtonElement>('[data-telemetry]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const enabled = btn.dataset.telemetry === 'on';
+      invoke('set_telemetry_enabled', { enabled }).catch(console.error);
+      setActive(telemetrySeg, btn);
+      currentSettings.telemetry_enabled = enabled;
     });
   });
 
@@ -338,6 +360,18 @@ function syncControls(): void {
     const activePlan = planSeg.querySelector<HTMLButtonElement>(`[data-plan="${planKey}"]`);
     planSeg.querySelectorAll<HTMLButtonElement>('.settings-opt').forEach((b) => {
       b.classList.toggle('active', b === activePlan);
+    });
+  }
+
+  // Telemetry
+  const telemetrySeg = panelEl.querySelector<HTMLElement>('#telemetry-seg');
+  if (telemetrySeg) {
+    const telemetryKey = currentSettings.telemetry_enabled ? 'on' : 'off';
+    const activeTelemetry = telemetrySeg.querySelector<HTMLButtonElement>(
+      `[data-telemetry="${telemetryKey}"]`
+    );
+    telemetrySeg.querySelectorAll<HTMLButtonElement>('.settings-opt').forEach((b) => {
+      b.classList.toggle('active', b === activeTelemetry);
     });
   }
 

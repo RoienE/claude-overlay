@@ -229,6 +229,32 @@ All polling intervals and constants live in `src-tauri/src/config.rs`. The defau
 
 ---
 
+## Privacy / Telemetry
+
+The app collects **anonymous, operational data** to help the maintainer understand how many
+installs are active, which versions are running, and how often API rate-limit errors occur.
+
+**What is sent:**
+
+| Field | Example | Purpose |
+|---|---|---|
+| `install_id` | random UUID v4 | Distinguish installs (not reversible to a user) |
+| `event` | `heartbeat` / `install` / `rate_limit_hit` | Event type |
+| `app_version` | `0.8.0` | Version distribution |
+| `os` | `windows` / `macos` / `linux` | Platform split |
+| `arch` | `x86_64` / `aarch64` | Architecture split |
+
+**What is never sent:** OAuth tokens, account info, profile data, plan or subscription
+details, usage numbers, file paths, hostnames, usernames, or any machine-derived identifier.
+The `install_id` is a randomly-generated UUID — it is not derived from your machine, account,
+or any personal attribute and cannot be reversed to identify you.
+
+**Default:** telemetry is **on by default** (opt-out). You can turn it off at any time under
+**Settings → Privacy** — the change takes effect immediately without restarting the app and
+survives updates.
+
+---
+
 ## Architecture
 
 ```
