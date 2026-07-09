@@ -10,6 +10,7 @@ use crate::config::{
 use crate::model::Plan;
 use crate::poller::{RefreshNotify, SharedPollerState};
 use crate::settings::{self, Settings};
+use crate::telemetry::Telemetry;
 
 /// Get the main application window.
 fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -254,4 +255,30 @@ pub async fn set_history_threshold(app: AppHandle, minutes: u32) -> Result<(), S
 pub async fn get_sessions(app: AppHandle) -> Vec<crate::model::SessionSummary> {
     let threshold = settings::load(&app).history_threshold_mins;
     crate::sessions::list_active(threshold as i64)
+}
+
+/// Toggle anonymous telemetry on or off.
+///
+/// Persists the choice to settings (best-effort; a write failure is logged but
+/// does not fail the command).  Also flips the live `AtomicBool` inside the
+/// shared `Telemetry` handle so the change takes effect immediately — no restart
+/// needed.  The heartbeat loop and rate-limit reporter both check the flag on
+/// every tick.
+#[tauri::command]
+pub async fn set_telemetry_enabled(
+    app: AppHandle,
+    enabled: bool,
+    telemetry: tauri::State<'_, Telemetry>,
+) -> Result<(), String> {
+    // Flip the live flag immediately so in-flight loops see the change.
+    telemetry.set_enabled(enabled);
+
+    // Persist the choice so it survives a restart.
+    let mut s = settings::load(&app);
+    s.telemetry_enabled = enabled;
+    if let Err(e) = settings::save(&app, &s) {
+        log::warn!("Failed to save telemetry_enabled setting: {e}");
+    }
+
+    Ok(())
 }

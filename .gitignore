@@ -7,3 +7,6 @@ src-tauri/target/
 
 .claude/artifacts/
 .shared/plans/
+
+/screenshots/
+/docs/

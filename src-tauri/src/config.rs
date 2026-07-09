@@ -34,6 +34,45 @@ pub const AUTH_RETRY_SECS: u64 = 60;
 /// Profile endpoint slow-poll cadence (seconds, ~1 hour).
 pub const PROFILE_POLL_SECS: u64 = 3600;
 
+// ── Telemetry ────────────────────────────────────────────────────────────────
+// The OTLP/HTTP endpoint base URL and the API key are injected at BUILD time via
+// the `TELEMETRY_ENDPOINT` / `TELEMETRY_API_KEY` env vars (GitHub Secrets in release
+// CI) and XOR-obfuscated by `build.rs` into `$OUT_DIR/telemetry_secrets.rs`, so no
+// plaintext endpoint/key appears in the shipped binary. When the env vars are unset
+// (local/dev builds) both accessors return `None` → telemetry is a guaranteed no-op.
+//
+// Obfuscation defeats `strings`/static scraping only — it is NOT real secrecy. A
+// determined reverse engineer, or a MITM of the app's own HTTPS request, can still
+// recover the values. The key is deliberately a write-only, rate-limited, rotatable
+// ingest token (see docs/telemetry.md), so a leaked key cannot do meaningful harm.
+include!(concat!(env!("OUT_DIR"), "/telemetry_secrets.rs"));
+
+/// Deobfuscated OTLP/HTTP endpoint base URL (e.g. `https://telemetry.example.com`),
+/// or `None` in dev builds where no endpoint was injected.
+pub fn telemetry_endpoint() -> Option<String> {
+    deobfuscate(TELEMETRY_ENDPOINT_SET, TELEMETRY_ENDPOINT_OBF, TELEMETRY_ENDPOINT_KEY)
+}
+
+/// Deobfuscated API key (the basicAuth password), or `None` in dev builds.
+pub fn telemetry_api_key() -> Option<String> {
+    deobfuscate(TELEMETRY_API_KEY_SET, TELEMETRY_API_KEY_OBF, TELEMETRY_API_KEY_KEY)
+}
+
+/// Reverse the build-time XOR obfuscation. Returns `None` when unset or non-UTF8.
+fn deobfuscate(set: bool, obf: &[u8], key: &[u8]) -> Option<String> {
+    if !set || key.is_empty() {
+        return None;
+    }
+    let bytes: Vec<u8> = obf.iter().zip(key.iter().cycle()).map(|(b, k)| b ^ k).collect();
+    String::from_utf8(bytes).ok()
+}
+
+/// Heartbeat emission interval: 6 hours.
+pub const HEARTBEAT_INTERVAL_SECS: u64 = 21_600;
+
+/// HTTP request timeout for telemetry POSTs.
+pub const TELEMETRY_TIMEOUT_SECS: u64 = 5;
+
 // ── Opacity range ─────────────────────────────────────────────────────────────
 /// Minimum allowed opacity (20 % — matches the slider lower bound).
 pub const OPACITY_MIN: f32 = 0.2;

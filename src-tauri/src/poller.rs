@@ -20,6 +20,7 @@ use crate::credential_source::read_credentials;
 use crate::fallback_logs;
 use crate::model::{ApiResult, Plan, Profile, SourceStatus, UsageSnapshot};
 use crate::plan_detector::{detect_from_profile, resolve_plan};
+use crate::telemetry::Telemetry;
 use crate::usage_client::{build_client, fetch_profile, fetch_usage};
 
 /// Message type sent from the poller to the Tauri event emitter.
@@ -90,7 +91,12 @@ async fn wait_or_wake(secs: u64, notify: &tokio::sync::Notify) {
 }
 
 /// The main polling loop. Run in a detached Tokio task.
-pub async fn run(sender: SnapshotSender, state: SharedPollerState, notify: RefreshNotify) {
+pub async fn run(
+    sender: SnapshotSender,
+    state: SharedPollerState,
+    notify: RefreshNotify,
+    telemetry: Telemetry,
+) {
     let client = match build_client() {
         Ok(c) => c,
         Err(e) => {
@@ -189,6 +195,7 @@ pub async fn run(sender: SnapshotSender, state: SharedPollerState, notify: Refre
                 }
                 ApiResult::RateLimited => {
                     warn!("Profile fetch: 429 RateLimited");
+                    telemetry.record_rate_limit_hit("profile", 0);
                 }
                 ApiResult::NetworkError(e) => {
                     warn!("Profile fetch network error: {}", e);
@@ -272,6 +279,7 @@ pub async fn run(sender: SnapshotSender, state: SharedPollerState, notify: Refre
                 warn!("Usage fetch: 429 RateLimited — backing off");
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF);
                 current_interval = backoff_secs;
+                telemetry.record_rate_limit_hit("usage", backoff_secs);
 
                 let until = std::time::Instant::now() + Duration::from_secs(backoff_secs);
                 {
