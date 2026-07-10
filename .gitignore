@@ -8,5 +8,6 @@ src-tauri/target/
 .claude/artifacts/
 .shared/plans/
 
-/screenshots/
-/docs/
+screenshots/
+docs/
+appstats-ingest/
