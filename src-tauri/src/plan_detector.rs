@@ -113,9 +113,12 @@ pub fn resolve_plan(
 /// Raw `/api/oauth/usage` top-level keys that are NOT real quota windows and
 /// must be excluded at parse time so they never render as bars.
 ///
-/// `"limits"` — an array that duplicates the `five_hour`/`seven_day` windows
-/// already parsed individually.  It has no `.utilization` field, so it would
-/// always render as a perpetual 0% "Limits" bar.
+/// `"limits"` — an array, not an object with `.utilization`, so it can never
+/// be parsed as a generic top-level window (it would render as a perpetual 0%
+/// "Limits" bar). It is handled separately in `usage_client::fetch_usage`,
+/// which pulls the `kind: "weekly_scoped"` entries out of it (per-model
+/// weekly caps such as Fable) as their own `QuotaWindow`s; this exclusion
+/// only stops it from *also* being treated as a naive top-level window.
 ///
 /// `"spend"` — a spend-tracker object with no `.utilization` field; same
 /// symptom: perpetual 0% "Spend" bar, unrelated to quota windows.
