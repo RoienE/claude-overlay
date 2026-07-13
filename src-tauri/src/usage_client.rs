@@ -12,7 +12,8 @@ use crate::config::{
     ANTHROPIC_BETA, DEFAULT_USER_AGENT, PROFILE_URL, REQUEST_TIMEOUT_SECS, USAGE_URL,
 };
 use crate::model::{
-    ApiResult, ExtraUsage, Profile, QuotaWindow, RawExtraUsage, RawProfile, RawSpend,
+    ApiResult, ExtraUsage, Profile, QuotaWindow, RawExtraUsage, RawLimitEntry, RawProfile,
+    RawSpend,
 };
 use crate::plan_detector::label_for_key;
 
@@ -93,6 +94,34 @@ fn extra_usage_from_spend(sp: &RawSpend) -> ExtraUsage {
     }
 }
 
+/// Extract per-model weekly-scoped windows (e.g. a "Fable" weekly cap) from
+/// the raw `limits` array of /api/oauth/usage. Entries whose `kind` is not
+/// `"weekly_scoped"`, or that are missing `percent`/`scope.model.display_name`,
+/// are silently skipped — they duplicate windows parsed elsewhere or are not
+/// yet in a shape we can render.
+fn scoped_weekly_windows_from_limits(entries: &[serde_json::Value]) -> Vec<QuotaWindow> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let raw_limit = serde_json::from_value::<RawLimitEntry>(entry.clone()).ok()?;
+            if raw_limit.kind.as_deref() != Some("weekly_scoped") {
+                return None;
+            }
+            let percent = raw_limit.percent?;
+            let model_name = raw_limit.scope?.model?.display_name?;
+            let slug = model_name.to_lowercase().replace(' ', "_");
+            let resets_at: Option<DateTime<Utc>> =
+                raw_limit.resets_at.as_deref().and_then(|s| s.parse().ok());
+            Some(QuotaWindow {
+                key: format!("weekly_scoped_{slug}"),
+                label: format!("Weekly ({model_name})"),
+                utilization: percent,
+                resets_at,
+            })
+        })
+        .collect()
+}
+
 /// Fetch and parse /api/oauth/usage.
 pub async fn fetch_usage(
     client: &Client,
@@ -163,6 +192,18 @@ pub async fn fetch_usage(
                 if let Ok(raw_spend) = serde_json::from_value::<RawSpend>(value.clone()) {
                     spend = Some(raw_spend);
                 }
+            }
+            continue;
+        }
+
+        if key == "limits" {
+            // Most entries (`kind: "session"` / `"weekly_all"`) duplicate the
+            // five_hour/seven_day windows already parsed above. But
+            // `kind: "weekly_scoped"` carries per-model weekly caps (e.g. a
+            // "Fable" weekly limit) that appear nowhere else in the payload,
+            // so pull those out as their own windows.
+            if let Some(arr) = value.as_array() {
+                windows.extend(scoped_weekly_windows_from_limits(arr));
             }
             continue;
         }
@@ -288,5 +329,59 @@ impl Default for crate::model::RawProfileOrganization {
             billing_type: None,
             organization_type: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shape observed live from /api/oauth/usage once a per-model weekly cap
+    /// ("Fable") is active: a "weekly_scoped" entry alongside the "session"
+    /// and "weekly_all" entries that duplicate five_hour/seven_day.
+    fn sample_limits() -> Vec<serde_json::Value> {
+        serde_json::from_str(
+            r#"[
+                { "kind": "session", "group": "session", "percent": 51,
+                  "resets_at": "2026-07-13T16:00:00.230399+02:00" },
+                { "kind": "weekly_all", "group": "weekly", "percent": 59,
+                  "resets_at": "2026-07-13T23:00:00.230425+02:00" },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 81,
+                  "resets_at": "2026-07-13T23:00:00.230755+02:00",
+                  "scope": { "model": { "id": null, "display_name": "Fable" } } }
+            ]"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scoped_weekly_window_extracted_from_limits() {
+        let windows = scoped_weekly_windows_from_limits(&sample_limits());
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].key, "weekly_scoped_fable");
+        assert_eq!(windows[0].label, "Weekly (Fable)");
+        assert_eq!(windows[0].utilization, 81.0);
+        assert!(windows[0].resets_at.is_some());
+    }
+
+    #[test]
+    fn session_and_weekly_all_entries_are_not_duplicated() {
+        let windows = scoped_weekly_windows_from_limits(&sample_limits());
+        assert!(!windows.iter().any(|w| w.key == "five_hour" || w.key == "seven_day"));
+    }
+
+    #[test]
+    fn entry_missing_model_display_name_is_skipped() {
+        let entries: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{ "kind": "weekly_scoped", "group": "weekly", "percent": 10,
+                  "scope": { "model": { "id": null, "display_name": null } } }]"#,
+        )
+        .unwrap();
+        assert!(scoped_weekly_windows_from_limits(&entries).is_empty());
+    }
+
+    #[test]
+    fn empty_limits_array_yields_no_windows() {
+        assert!(scoped_weekly_windows_from_limits(&[]).is_empty());
     }
 }
