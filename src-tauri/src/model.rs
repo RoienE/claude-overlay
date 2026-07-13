@@ -74,6 +74,29 @@ pub struct RawSpend {
     pub enabled: Option<bool>,
 }
 
+/// One entry in the `limits` array of /api/oauth/usage. Most entries
+/// (`kind: "session"` / `"weekly_all"`) duplicate the `five_hour`/`seven_day`
+/// top-level windows, but `kind: "weekly_scoped"` carries per-model weekly
+/// caps (e.g. Fable) that appear nowhere else in the payload.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RawLimitEntry {
+    pub kind: Option<String>,
+    pub group: Option<String>,
+    pub percent: Option<f32>,
+    pub resets_at: Option<String>,
+    pub scope: Option<RawLimitScope>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RawLimitScope {
+    pub model: Option<RawLimitScopeModel>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RawLimitScopeModel {
+    pub display_name: Option<String>,
+}
+
 /// The full /api/oauth/usage response parsed as a generic map.
 /// NOTE: In practice, we parse this via serde_json::Value in usage_client.rs
 /// for more control. This struct is kept for documentation purposes.
