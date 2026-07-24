@@ -123,10 +123,14 @@ pub fn resolve_plan(
 /// `"spend"` — a spend-tracker object with no `.utilization` field; same
 /// symptom: perpetual 0% "Spend" bar, unrelated to quota windows.
 ///
+/// `"member_dashboard_available"` — a bare boolean feature flag (whether the
+/// account can see the per-member usage dashboard on claude.ai), not a quota
+/// window; renders as a perpetual 0% "Member Dashboard Available" bar.
+///
 /// The list is intentionally a one-line-editable constant so it stays trivial
 /// to extend when Anthropic adds more non-window keys to the response.
 /// Keys are the exact raw API keys (case-sensitive); labels are NOT used here.
-pub const EXCLUDED_WINDOW_KEYS: &[&str] = &["limits", "spend"];
+pub const EXCLUDED_WINDOW_KEYS: &[&str] = &["limits", "spend", "member_dashboard_available"];
 
 /// Return `true` if `key` is a known non-window key that must not be parsed
 /// into a `QuotaWindow`.  Applied at parse time in `usage_client.rs`.
@@ -256,16 +260,17 @@ mod tests {
 
     #[test]
     fn excluded_keys_are_listed() {
-        // The constant must contain exactly the two noise keys confirmed from
-        // the Phase-1 live payload capture.
+        // Noise keys confirmed from live payload captures.
         assert!(EXCLUDED_WINDOW_KEYS.contains(&"limits"));
         assert!(EXCLUDED_WINDOW_KEYS.contains(&"spend"));
+        assert!(EXCLUDED_WINDOW_KEYS.contains(&"member_dashboard_available"));
     }
 
     #[test]
     fn is_excluded_window_key_rejects_noise() {
         assert!(is_excluded_window_key("limits"));
         assert!(is_excluded_window_key("spend"));
+        assert!(is_excluded_window_key("member_dashboard_available"));
     }
 
     #[test]
