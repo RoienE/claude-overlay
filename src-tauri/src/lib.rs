@@ -96,6 +96,13 @@ pub fn run() {
             // Use the app's bundled icon for the tray, or a fallback pixel if unavailable.
             let tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
+                // Left click must ONLY toggle the window.  `tray-icon` defaults
+                // `menu_on_left_click` to true, which makes a single left click both
+                // pop the menu and emit TrayIconEvent::Click — so the window toggled
+                // *and* the menu appeared.  Right click is governed by a separate
+                // `menu_on_right_click` flag that stays true, so the context menu is
+                // unaffected.  Unsupported on Linux (appindicator owns the left click).
+                .show_menu_on_left_click(false)
                 .tooltip("Claude Usage Overlay")
                 .on_menu_event(|app: &AppHandle, event| match event.id.as_ref() {
                     "show" => toggle_window(app),
