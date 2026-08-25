@@ -206,6 +206,9 @@ pub struct UsageSnapshot {
     pub fetched_at: DateTime<Utc>,
     /// Seconds until next scheduled poll (for UI countdown).
     pub next_poll_in: u64,
+    /// Short, non-sensitive explanation of a failed state, shown under the
+    /// sign-in message. Codes and labels only — never a path or account name.
+    pub diagnostic: Option<String>,
 }
 
 impl UsageSnapshot {
@@ -218,6 +221,7 @@ impl UsageSnapshot {
             status: SourceStatus::Loading,
             fetched_at: Utc::now(),
             next_poll_in: 0,
+            diagnostic: None,
         }
     }
 
@@ -230,6 +234,15 @@ impl UsageSnapshot {
             status: SourceStatus::AuthExpired,
             fetched_at: Utc::now(),
             next_poll_in: 60,
+            diagnostic: None,
+        }
+    }
+
+    /// Auth-expired, with the reason the credential read failed.
+    pub fn auth_expired_with(diagnostic: impl Into<String>) -> Self {
+        Self {
+            diagnostic: Some(diagnostic.into()),
+            ..Self::auth_expired()
         }
     }
 }

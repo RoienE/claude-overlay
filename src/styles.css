@@ -142,6 +142,16 @@ html, body {
   opacity: 0.6;
 }
 
+/* Failure reason under a state message: secondary, wraps, never clipped. */
+.state-detail {
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: 0.65;
+  text-align: center;
+  max-width: 90%;
+  overflow-wrap: anywhere;
+}
+
 /* ── Footer ────────────────────────────────────────────────────────────────── */
 .card-footer {
   padding: 4px 10px 6px;

@@ -45,6 +45,8 @@ export interface UsageSnapshot {
   status: SourceStatusType;
   fetched_at: string; // ISO-8601
   next_poll_in: number; // seconds
+  /** Short, non-sensitive reason for a failed state (codes and labels only). */
+  diagnostic: string | null;
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────

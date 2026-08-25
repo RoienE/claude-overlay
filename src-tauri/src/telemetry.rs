@@ -10,9 +10,18 @@
 //! - timestamp      — nanoseconds since epoch
 //! - `endpoint`     — `"usage"` | `"profile"` (rate-limit events only)
 //! - `backoff_secs` — u64 (rate-limit events only)
+//! - `stage`        — credential source that failed, closed vocabulary
+//! - `reason`       — why it failed, closed vocabulary
+//! - `os_status`    — macOS `OSStatus` integer (error events only)
+//! - `exit_code`    — `security` CLI exit code (error events only)
+//! - `component`    — subsystem that raised an app error, closed vocabulary
+//! - `location`     — `src/<file>:<line>` of a panic, sanitised of build paths
 //!
 //! NEVER sent: OAuth tokens, profile/account data, plan tier, usage numbers,
-//! file paths, hostnames, usernames, IPs, or any machine-derived identifier.
+//! file paths, hostnames, usernames, IPs, panic messages, OS error strings, or
+//! any machine-derived identifier. Failures are transmitted as *codes only* —
+//! the raw error text stays in the local log, because it embeds home-directory
+//! paths and account names.
 //!
 //! ## Design
 //! `Telemetry` is cheaply cloneable (Arc internals) so it can be shared between
@@ -20,15 +29,45 @@
 //! All sends are fire-and-forget tokio tasks — telemetry can never block or
 //! crash the app.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use log::debug;
 use reqwest::Client;
 use serde_json::{json, Value};
 
 use crate::config::{HEARTBEAT_INTERVAL_SECS, TELEMETRY_TIMEOUT_SECS};
+
+/// How long an unchanged error fingerprint stays silent after being reported.
+const ERROR_REPEAT_SECS: u64 = 3_600;
+
+/// Handle used by the panic hook. Set once, at startup.
+static PANIC_REPORTER: OnceLock<Telemetry> = OnceLock::new();
+
+/// Install a panic hook that reports panics as telemetry, then defers to the
+/// previous hook so the normal abort/backtrace behaviour is unchanged.
+///
+/// Only the sanitised source location is transmitted: a panic *message* can embed
+/// values from whatever was being processed, so it is logged locally and never sent.
+pub fn install_panic_hook(telemetry: Telemetry) {
+    if PANIC_REPORTER.set(telemetry).is_err() {
+        return; // already installed
+    }
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| sanitize_location(l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+        log::error!("Panic at {location}: {info}");
+        if let Some(telemetry) = PANIC_REPORTER.get() {
+            telemetry.record_panic(&location);
+        }
+        previous(info);
+    }));
+}
 
 // ── Inner state (Arc-shared) ──────────────────────────────────────────────────
 
@@ -37,8 +76,88 @@ struct TelemetryInner {
     endpoint: Option<String>,
     /// Raw API key stored for use with `reqwest::RequestBuilder::basic_auth`.
     api_key: Option<String>,
+    /// Per-install identity attached to every event, so an error can be traced to
+    /// one install without any machine-derived identifier.
+    identity: Identity,
+    /// Last error fingerprint per event name, for throttling. See `should_emit_error`.
+    error_state: Mutex<HashMap<&'static str, (String, Instant)>>,
     /// Live toggle; updated atomically so opt-out takes effect immediately.
     enabled: AtomicBool,
+}
+
+// ── Identity & severity ──────────────────────────────────────────────────
+
+/// The anonymous identity stamped onto every event.
+///
+/// Held by the handle rather than passed per call, so an event added anywhere in
+/// the app is correlatable to one install without the caller having to remember.
+#[derive(Debug, Clone)]
+pub struct Identity {
+    /// Random UUIDv4 from settings — never machine-derived.
+    pub install_id: String,
+    pub app_version: String,
+    pub os: String,
+    pub arch: String,
+}
+
+impl Identity {
+    /// Build from the persisted install id; everything else is known at build time.
+    pub fn new(install_id: impl Into<String>) -> Self {
+        Self {
+            install_id: install_id.into(),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            os: normalized_os().to_string(),
+            arch: normalized_arch().to_string(),
+        }
+    }
+
+    fn attrs(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("install_id", self.install_id.clone()),
+            ("app_version", self.app_version.clone()),
+            ("os", self.os.clone()),
+            ("arch", self.arch.clone()),
+        ]
+    }
+}
+
+/// OTLP severity. Only the two levels this app emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Info,
+    Error,
+}
+
+impl Severity {
+    fn number(self) -> u8 {
+        match self {
+            Self::Info => 9,
+            Self::Error => 17,
+        }
+    }
+
+    fn text(self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+/// A panic location is turned into `src/<file>:<line>`.
+///
+/// A dependency panic carries the *build machine's* cargo registry path, which is
+/// noise at best; keep only the part that identifies the code.
+pub fn sanitize_location(file: &str, line: u32) -> String {
+    let short = match file.rsplit_once("src/") {
+        Some((_, tail)) => format!("src/{tail}"),
+        None => file
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("unknown")
+            .to_string(),
+    };
+    format!("{short}:{line}")
 }
 
 // ── Public handle ─────────────────────────────────────────────────────────────
@@ -54,11 +173,18 @@ impl Telemetry {
     ///
     /// When `endpoint` is `None` (dev builds without the secret injected)
     /// every method is a guaranteed no-op — no network traffic, no errors.
-    pub fn new(endpoint: Option<&str>, api_key: Option<&str>, enabled: bool) -> Self {
+    pub fn new(
+        endpoint: Option<&str>,
+        api_key: Option<&str>,
+        enabled: bool,
+        identity: Identity,
+    ) -> Self {
         Self {
             inner: Arc::new(TelemetryInner {
                 endpoint: endpoint.map(|s| s.trim_end_matches('/').to_string()),
                 api_key: api_key.map(|s| s.to_string()),
+                identity,
+                error_state: Mutex::new(HashMap::new()),
                 enabled: AtomicBool::new(enabled),
             }),
         }
@@ -75,6 +201,12 @@ impl Telemetry {
     /// Spawns a fire-and-forget tokio task; all errors are swallowed at `debug`.
     /// Never blocks, never propagates failures.
     pub fn record(&self, event: &str, attrs: &[(&str, String)]) {
+        self.record_with_severity(event, Severity::Info, attrs);
+    }
+
+    /// As `record`, but stamps an explicit OTLP severity so error events can be
+    /// filtered apart from the routine install/heartbeat traffic.
+    pub fn record_with_severity(&self, event: &str, severity: Severity, attrs: &[(&str, String)]) {
         if !self.inner.enabled.load(Ordering::Relaxed) {
             return;
         }
@@ -83,7 +215,11 @@ impl Telemetry {
             None => return,
         };
 
-        let payload = build_payload(event, attrs);
+        // Identity first, then the event's own attributes.
+        let mut all: Vec<(&str, String)> = self.inner.identity.attrs();
+        all.extend(attrs.iter().map(|(k, v)| (*k, v.clone())));
+
+        let payload = build_payload_with_severity(event, &all, severity);
         let url = format!("{endpoint}/v1/logs");
         let api_key = self.inner.api_key.clone();
         let event = event.to_string();
@@ -102,29 +238,88 @@ impl Telemetry {
     // ── Convenience methods ───────────────────────────────────────────────────
 
     /// Emit an `install` event (first run only).
-    pub fn record_install(&self, install_id: &str, app_version: &str, os: &str, arch: &str) {
-        self.record(
-            "install",
+    pub fn record_install(&self) {
+        self.record("install", &[]);
+    }
+
+    /// Emit a `heartbeat` event.
+    pub fn record_heartbeat(&self) {
+        self.record("heartbeat", &[]);
+    }
+
+    /// Emit a `credential_error` event: the app could not resolve a usable token.
+    ///
+    /// `stage` and `reason` are the closed-vocabulary codes from `credential_source`;
+    /// no path, account name or OS error string is ever passed here.
+    pub fn record_credential_error(
+        &self,
+        stage: &str,
+        reason: &str,
+        os_status: Option<i32>,
+        exit_code: Option<i32>,
+    ) {
+        let fingerprint = format!("{stage}/{reason}/{os_status:?}/{exit_code:?}");
+        if !self.should_emit_error("credential_error", &fingerprint) {
+            return;
+        }
+
+        let mut attrs = vec![("stage", stage.to_string()), ("reason", reason.to_string())];
+        if let Some(code) = os_status {
+            attrs.push(("os_status", code.to_string()));
+        }
+        if let Some(code) = exit_code {
+            attrs.push(("exit_code", code.to_string()));
+        }
+        self.record_with_severity("credential_error", Severity::Error, &attrs);
+    }
+
+    /// Emit an `app_error` event for a non-credential subsystem failure.
+    pub fn record_app_error(&self, component: &str, reason: &str) {
+        let fingerprint = format!("{component}/{reason}");
+        if !self.should_emit_error("app_error", &fingerprint) {
+            return;
+        }
+        self.record_with_severity(
+            "app_error",
+            Severity::Error,
             &[
-                ("install_id", install_id.to_string()),
-                ("app_version", app_version.to_string()),
-                ("os", os.to_string()),
-                ("arch", arch.to_string()),
+                ("component", component.to_string()),
+                ("reason", reason.to_string()),
             ],
         );
     }
 
-    /// Emit a `heartbeat` event.
-    pub fn record_heartbeat(&self, install_id: &str, app_version: &str, os: &str, arch: &str) {
-        self.record(
-            "heartbeat",
-            &[
-                ("install_id", install_id.to_string()),
-                ("app_version", app_version.to_string()),
-                ("os", os.to_string()),
-                ("arch", arch.to_string()),
-            ],
-        );
+    /// Emit a `panic` event. `location` must already be sanitised.
+    ///
+    /// Best-effort: the send is a spawned task, so a panic that immediately aborts
+    /// the process may outrun it. Panics inside a Tokio task normally do report.
+    pub fn record_panic(&self, location: &str) {
+        self.record_with_severity("panic", Severity::Error, &[("location", location.to_string())]);
+    }
+
+    /// Throttle gate for error events.
+    ///
+    /// The poller retries every `AUTH_RETRY_SECS`, so an unresolvable failure would
+    /// otherwise emit ~1400 events per install per day. Emit when the fingerprint
+    /// changes, and at most once per `ERROR_REPEAT_SECS` while it does not.
+    fn should_emit_error(&self, event: &'static str, fingerprint: &str) -> bool {
+        let mut state = match self.inner.error_state.lock() {
+            Ok(state) => state,
+            // A poisoned lock must not silence error reporting.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let now = Instant::now();
+        match state.get(event) {
+            Some((seen, at))
+                if seen == fingerprint && now.duration_since(*at).as_secs() < ERROR_REPEAT_SECS =>
+            {
+                false
+            }
+            _ => {
+                state.insert(event, (fingerprint.to_string(), now));
+                true
+            }
+        }
     }
 
     /// Emit a `rate_limit_hit` event.
@@ -142,17 +337,11 @@ impl Telemetry {
     ///
     /// Emits one heartbeat immediately, then one every `HEARTBEAT_INTERVAL_SECS`.
     /// Each tick re-checks `enabled` via `record` so opt-out silences it live.
-    pub fn spawn_heartbeat_loop(
-        self,
-        install_id: String,
-        app_version: String,
-        os: String,
-        arch: String,
-    ) {
+    pub fn spawn_heartbeat_loop(self) {
         // Spawn onto Tauri's managed runtime so it is safe to call from `setup`.
         tauri::async_runtime::spawn(async move {
             loop {
-                self.record_heartbeat(&install_id, &app_version, &os, &arch);
+                self.record_heartbeat();
                 tokio::time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
             }
         });
@@ -166,6 +355,15 @@ impl Telemetry {
 /// Pure function — no I/O, no side-effects.  Kept public so unit tests can
 /// inspect the exact wire format.
 pub fn build_payload(event: &str, attrs: &[(&str, String)]) -> Value {
+    build_payload_with_severity(event, attrs, Severity::Info)
+}
+
+/// As `build_payload`, with an explicit severity.
+pub fn build_payload_with_severity(
+    event: &str,
+    attrs: &[(&str, String)],
+    severity: Severity,
+) -> Value {
     let time_ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
@@ -196,8 +394,8 @@ pub fn build_payload(event: &str, attrs: &[(&str, String)]) -> Value {
                 "scope": { "name": "claude-overlay-telemetry" },
                 "logRecords": [{
                     "timeUnixNano": time_ns,
-                    "severityNumber": 9,
-                    "severityText": "INFO",
+                    "severityNumber": severity.number(),
+                    "severityText": severity.text(),
                     "body": { "stringValue": event },
                     "attributes": attribute_entries
                 }]
@@ -283,7 +481,24 @@ mod tests {
         "arch",
         "endpoint",
         "backoff_secs",
+        // error events
+        "stage",
+        "reason",
+        "os_status",
+        "exit_code",
+        "component",
+        "location",
     ];
+
+    /// Identity used by handle tests. Never a real install id.
+    fn test_identity() -> Identity {
+        Identity {
+            install_id: "test-uuid".to_string(),
+            app_version: "0.0.0-test".to_string(),
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+        }
+    }
 
     /// Keys that must NEVER appear in telemetry payloads (privacy check).
     const FORBIDDEN_KEYS: &[&str] = &[
@@ -426,7 +641,7 @@ mod tests {
     #[test]
     fn record_noop_when_disabled() {
         // enabled=false → record must return immediately without spawning.
-        let t = Telemetry::new(Some("http://localhost:9999"), None, false);
+        let t = Telemetry::new(Some("http://localhost:9999"), None, false, test_identity());
         assert!(!t.inner.enabled.load(Ordering::Relaxed));
         // Must not panic.
         t.record("heartbeat", &[]);
@@ -435,7 +650,7 @@ mod tests {
     #[test]
     fn record_noop_when_no_endpoint() {
         // endpoint=None → record must return immediately.
-        let t = Telemetry::new(None, None, true);
+        let t = Telemetry::new(None, None, true, test_identity());
         assert!(t.inner.endpoint.is_none());
         // Must not panic.
         t.record("heartbeat", &[]);
@@ -443,7 +658,7 @@ mod tests {
 
     #[test]
     fn set_enabled_flips_atomicbool() {
-        let t = Telemetry::new(None, None, true);
+        let t = Telemetry::new(None, None, true, test_identity());
         assert!(t.inner.enabled.load(Ordering::Relaxed));
         t.set_enabled(false);
         assert!(!t.inner.enabled.load(Ordering::Relaxed));
@@ -453,7 +668,7 @@ mod tests {
 
     #[test]
     fn clone_shares_same_atomicbool() {
-        let t1 = Telemetry::new(None, None, true);
+        let t1 = Telemetry::new(None, None, true, test_identity());
         let t2 = t1.clone();
         t1.set_enabled(false);
         // t2 observes the change because they share the same Arc<TelemetryInner>.
@@ -474,10 +689,118 @@ mod tests {
 
     #[test]
     fn endpoint_trailing_slash_is_stripped() {
-        let t = Telemetry::new(Some("https://telemetry.example.com/"), None, true);
+        let t = Telemetry::new(Some("https://telemetry.example.com/"), None, true, test_identity());
         assert_eq!(
             t.inner.endpoint.as_deref().unwrap(),
             "https://telemetry.example.com"
+        );
+    }
+
+    // ── identity, severity, throttling ───────────────────────────────────
+
+    #[test]
+    fn build_payload_with_severity_marks_errors() {
+        let payload = build_payload_with_severity("credential_error", &[], Severity::Error);
+        let record = &payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
+        assert_eq!(record["severityNumber"], 17);
+        assert_eq!(record["severityText"], "ERROR");
+    }
+
+    #[test]
+    fn build_payload_defaults_to_info_severity() {
+        let payload = build_payload("heartbeat", &[]);
+        let record = &payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
+        assert_eq!(record["severityNumber"], 9);
+        assert_eq!(record["severityText"], "INFO");
+    }
+
+    #[test]
+    fn identity_supplies_the_correlation_attributes() {
+        let attrs = test_identity().attrs();
+        let keys: Vec<&str> = attrs.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec!["install_id", "app_version", "os", "arch"]);
+        for (key, _) in &attrs {
+            assert!(
+                ALLOWED_ATTR_KEYS.contains(key),
+                "identity key '{key}' is not whitelisted"
+            );
+        }
+    }
+
+    /// An unresolvable credential failure retries every minute; without throttling
+    /// that is ~1400 events per install per day.
+    #[test]
+    fn repeat_error_fingerprint_is_throttled() {
+        let t = Telemetry::new(None, None, true, test_identity());
+        assert!(t.should_emit_error("credential_error", "keychain_cli/timeout"));
+        assert!(
+            !t.should_emit_error("credential_error", "keychain_cli/timeout"),
+            "the same fingerprint must not be re-sent inside the repeat window"
+        );
+    }
+
+    #[test]
+    fn changed_error_fingerprint_is_emitted_immediately() {
+        let t = Telemetry::new(None, None, true, test_identity());
+        assert!(t.should_emit_error("credential_error", "keychain_cli/timeout"));
+        assert!(
+            t.should_emit_error("credential_error", "keychain_legacy/permission_denied"),
+            "a different failure must report even inside the repeat window"
+        );
+    }
+
+    #[test]
+    fn error_events_are_throttled_per_event_name() {
+        let t = Telemetry::new(None, None, true, test_identity());
+        assert!(t.should_emit_error("credential_error", "same"));
+        assert!(
+            t.should_emit_error("app_error", "same"),
+            "throttling one event must not silence another"
+        );
+    }
+
+    /// Privacy: a panic location must never carry the build machine's paths.
+    #[test]
+    fn sanitize_location_strips_build_paths() {
+        assert_eq!(
+            sanitize_location("/Users/somebody/.cargo/registry/src/x-1.0/src/lib.rs", 42),
+            "src/lib.rs:42"
+        );
+        assert_eq!(sanitize_location("src/poller.rs", 7), "src/poller.rs:7");
+        assert_eq!(sanitize_location("weird.rs", 1), "weird.rs:1");
+    }
+
+    /// Privacy: the credential error payload carries codes only — no path, no token.
+    #[test]
+    fn credential_error_payload_is_codes_only() {
+        let payload = build_payload_with_severity(
+            "credential_error",
+            &[
+                ("install_id", "test-uuid".to_string()),
+                ("stage", "keychain_legacy".to_string()),
+                ("reason", "permission_denied".to_string()),
+                ("os_status", "-25293".to_string()),
+            ],
+            Severity::Error,
+        );
+
+        for key in collect_record_attr_keys(&payload) {
+            assert!(
+                ALLOWED_ATTR_KEYS.contains(&key.as_str()),
+                "attribute key '{key}' is not in the privacy whitelist"
+            );
+        }
+
+        let json_str = payload.to_string();
+        for forbidden in FORBIDDEN_KEYS {
+            assert!(
+                !json_str.contains(forbidden),
+                "payload must not contain forbidden string '{forbidden}'"
+            );
+        }
+        assert!(
+            !json_str.contains("/Users/"),
+            "payload must not contain a home-directory path"
         );
     }
 }
