@@ -53,13 +53,57 @@ fn set_aumid() {
     }
 }
 
+/// Reveal the log directory in the OS file manager.
+///
+/// Hands the user the log file itself rather than copying a one-line summary — the
+/// file has the whole attempt trail. Uses the platform opener directly: the shell
+/// plugin's `open` is deprecated, and this needs no extra dependency.
+fn open_log_dir(app: &AppHandle) {
+    let dir = match app.path().app_log_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::warn!("Could not resolve the log directory: {e}");
+            return;
+        }
+    };
+
+    // The directory only exists once the logger has written to it.
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!("Could not create the log directory: {e}");
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(target_os = "windows")]
+    let opener = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opener = "xdg-open";
+
+    // explorer.exe reports a nonzero exit even on success, so the status is ignored
+    // everywhere; a spawn failure is the only thing worth logging.
+    if let Err(e) = std::process::Command::new(opener).arg(&dir).spawn() {
+        log::warn!("Could not open the log directory: {e}");
+    }
+}
+
+/// Log level for the file/stdout logger: `RUST_LOG` when it names a level, else Info.
+///
+/// Deliberately not the full RUST_LOG filter grammar — the plugin takes a single
+/// level, and the only thing anyone needs here is `RUST_LOG=debug`.
+fn log_level_from_env() -> log::LevelFilter {
+    std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<log::LevelFilter>().ok())
+        .unwrap_or(log::LevelFilter::Info)
+}
+
 pub fn run() {
     // Must be called before any window or COM object is created so Windows can
     // associate the process with the Start Menu shortcut's AppUserModelID.
     #[cfg(windows)]
     set_aumid();
 
-    env_logger::init();
 
     let poller_state: SharedPollerState = Arc::new(Mutex::new(PollerState::default()));
     let refresh_notify: RefreshNotify = Arc::new(tokio::sync::Notify::new());
@@ -75,6 +119,29 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }))
+        // Registered directly after single-instance, so everything from here on —
+        // every later plugin and the whole setup hook — is captured.
+        //
+        // A GUI .app has nowhere visible for stderr, which is why a credential
+        // failure used to be invisible: the reason was written to a stream nobody
+        // could read. The LogDir target puts it in a file the user can open
+        // (macOS: ~/Library/Logs/<bundle id>/) via the tray's "Open log folder".
+        // Default level is Info so warnings land without anyone knowing RUST_LOG;
+        // RUST_LOG still overrides. No log statement in this app prints a token or
+        // an API key.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log_level_from_env())
+                .max_file_size(2 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("claude-overlay".into()),
+                    }),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -90,8 +157,17 @@ pub fn run() {
                 MenuItem::with_id(app, "update", "Check for Updates", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-            let menu =
-                Menu::with_items(app, &[&show_item, &refresh_item, &update_item, &quit_item])?;
+            let logs_item = MenuItem::with_id(app, "logs", "Open log folder", true, None::<&str>)?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &refresh_item,
+                    &update_item,
+                    &logs_item,
+                    &quit_item,
+                ],
+            )?;
 
             // Use the app's bundled icon for the tray, or a fallback pixel if unavailable.
             let tray_builder = TrayIconBuilder::new()
@@ -118,6 +194,7 @@ pub fn run() {
                     "update" => {
                         let _ = app.emit("updater://check-requested", ());
                     }
+                    "logs" => open_log_dir(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -152,32 +229,27 @@ pub fn run() {
                 }
             }
 
-            // Build the shared telemetry handle.
+            // Build the shared telemetry handle. The identity lives in the handle so
+            // every event — including errors raised deep in the poller — is
+            // attributable to one install without threading it through call sites.
             let telemetry = Telemetry::new(
                 crate::config::telemetry_endpoint().as_deref(),
                 crate::config::telemetry_api_key().as_deref(),
                 saved.telemetry_enabled,
+                crate::telemetry::Identity::new(saved.install_id.clone().unwrap_or_default()),
             );
+
+            // Report panics (sanitised location only) before deferring to the
+            // default hook.
+            crate::telemetry::install_panic_hook(telemetry.clone());
 
             // Emit install event on first run.
             if is_first_run {
-                let install_id = saved.install_id.as_deref().unwrap_or("");
-                let app_version = env!("CARGO_PKG_VERSION");
-                telemetry.record_install(
-                    install_id,
-                    app_version,
-                    crate::telemetry::normalized_os(),
-                    crate::telemetry::normalized_arch(),
-                );
+                telemetry.record_install();
             }
 
             // Start the heartbeat loop (runs for the lifetime of the app).
-            telemetry.clone().spawn_heartbeat_loop(
-                saved.install_id.clone().unwrap_or_default(),
-                env!("CARGO_PKG_VERSION").to_string(),
-                crate::telemetry::normalized_os().to_string(),
-                crate::telemetry::normalized_arch().to_string(),
-            );
+            telemetry.clone().spawn_heartbeat_loop();
 
             // Register the Telemetry handle so window_ctl commands can access it.
             app.manage(telemetry.clone());

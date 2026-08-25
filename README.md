@@ -105,11 +105,31 @@ uses). No configuration needed — if Claude Code is logged in, the widget shows
 
 **Credentials:** The app reads the OAuth token from the macOS **Keychain** (service name
 `Claude Code-credentials`) — the same location Claude Code stores it on a normal macOS install.
-On first credential read, macOS displays a one-time "allow access" prompt for the app; click
-**Allow**. The app never writes to or modifies the Keychain item.
+The read goes through Apple's `security` tool first (`security find-generic-password -s
+"Claude Code-credentials" -w`), because the Keychain item's access list is created by Claude
+Code and normally does not include this app; if that is unavailable the app falls back to an
+in-process Keychain read, which may show a one-time "allow access" prompt — click **Allow**.
+The app never writes to or modifies the Keychain item.
 
 If you have a `~/.claude/.credentials.json` file (e.g. from an SSH/headless setup), the app
-tries that file first and only falls back to the Keychain when the file is absent.
+tries that file first. A file that is missing, malformed, **or holds an expired token** does
+not stop the app from falling back to the Keychain — the Keychain is what Claude Code keeps
+refreshed, so a hand-copied file never pins the app to a token that can no longer be renewed.
+
+**If the widget keeps saying you need to log in** while Claude Code is logged in, the card now
+shows the reason underneath the message (for example *"Keychain access denied (OSStatus -25293)"*),
+and the full attempt trail is written to a log file. Open it from the tray menu → **Open log
+folder** (macOS: `~/Library/Logs/com.claude-overlay.application/claude-overlay.log`).
+
+For more detail, run the app from a terminal:
+
+```sh
+RUST_LOG=debug /Applications/Claude\ Overlay.app/Contents/MacOS/claude-overlay
+```
+
+The credential lines name every source that was tried and why each failed — for an in-process
+Keychain read that includes the `OSStatus` (`-25300` = item not found, `-25293` = access denied,
+`-25308` = a prompt was needed but could not be shown, `-128` = prompt cancelled).
 
 ### Linux
 

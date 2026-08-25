@@ -160,10 +160,16 @@ export function renderSnapshot(card: HTMLElement, snap: UsageSnapshot): void {
   }
 
   if (statusType === 'auth_expired') {
+    // The reason matters: "sign in" is wrong advice when the real problem is a
+    // Keychain permission or a wedged read, and the user cannot see the log.
+    const diagnostic = snap.diagnostic
+      ? `<span class="state-detail">${escapeHtml(snap.diagnostic)}</span>`
+      : '';
     body.innerHTML = `
       <div class="state-message">
         <span class="icon">🔑</span>
         <span>Sign in to Claude Code<br>to see usage data.</span>
+        ${diagnostic}
       </div>`;
     footer.style.display = 'none';
     return;
@@ -286,4 +292,13 @@ function statusDotInfo(status: UsageSnapshot['status']): { dotClass: string; dot
     case 'error': return { dotClass: 'error', dotTitle: `Error: ${status.detail}` };
     default: return { dotClass: 'loading', dotTitle: '' };
   }
+}
+
+/** Escape HTML special characters for safe inline rendering. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

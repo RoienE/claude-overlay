@@ -16,7 +16,7 @@ use crate::config::{
     AUTH_RETRY_SECS, FAST_EXTRA_COUNT, IDLE_PAUSE, MAX_BACKOFF, POLL_ERROR, POLL_FAST,
     POLL_FAST_EXTRA, POLL_INTERVAL, PROFILE_POLL_SECS,
 };
-use crate::credential_source::read_credentials;
+use crate::credential_source::{read_credentials, CredentialReason, CredentialStage};
 use crate::fallback_logs;
 use crate::model::{ApiResult, Plan, Profile, SourceStatus, UsageSnapshot};
 use crate::plan_detector::{detect_from_profile, resolve_plan};
@@ -160,12 +160,17 @@ pub async fn run(
         let credentials = match read_credentials() {
             Ok(c) => c,
             Err(e) => {
-                warn!("Cannot read credentials: {}", e);
-                let snap = UsageSnapshot {
-                    status: SourceStatus::AuthExpired,
-                    ..UsageSnapshot::auth_expired()
-                };
-                let _ = sender.send(snap);
+                // The full trail goes to the local log; only the deepest failure's
+                // codes are reported, and only its short form reaches the UI.
+                warn!("Cannot read credentials: {e}");
+                let primary = e.primary();
+                telemetry.record_credential_error(
+                    primary.stage.as_str(),
+                    primary.reason.as_str(),
+                    primary.os_status,
+                    primary.exit_code,
+                );
+                let _ = sender.send(UsageSnapshot::auth_expired_with(primary.to_string()));
                 sleep(Duration::from_secs(AUTH_RETRY_SECS)).await;
                 continue;
             }
@@ -173,7 +178,15 @@ pub async fn run(
 
         if credentials.is_expired {
             warn!("OAuth token expired");
-            let _ = sender.send(UsageSnapshot::auth_expired());
+            telemetry.record_credential_error(
+                CredentialStage::NoSource.as_str(),
+                CredentialReason::Expired.as_str(),
+                None,
+                None,
+            );
+            let _ = sender.send(UsageSnapshot::auth_expired_with(
+                "Token has expired — sign in to Claude Code again",
+            ));
             sleep(Duration::from_secs(AUTH_RETRY_SECS)).await;
             continue;
         }
@@ -191,6 +204,7 @@ pub async fn run(
                 }
                 ApiResult::Unauthorized => {
                     warn!("Profile fetch: 401 Unauthorized");
+                    telemetry.record_app_error("profile", "unauthorized");
                     // Don't stop usage polling; just skip profile
                 }
                 ApiResult::RateLimited => {
@@ -199,9 +213,11 @@ pub async fn run(
                 }
                 ApiResult::NetworkError(e) => {
                     warn!("Profile fetch network error: {}", e);
+                    telemetry.record_app_error("profile", "network_error");
                 }
                 ApiResult::ParseError(e) => {
                     warn!("Profile fetch parse error: {}", e);
+                    telemetry.record_app_error("profile", "parse_error");
                 }
             }
         }
@@ -266,6 +282,7 @@ pub async fn run(
                     status: SourceStatus::Live,
                     fetched_at: Utc::now(),
                     next_poll_in: current_interval,
+                    diagnostic: None,
                 };
 
                 {
@@ -302,7 +319,10 @@ pub async fn run(
 
             ApiResult::Unauthorized => {
                 warn!("Usage fetch: 401 Unauthorized — auth expired");
-                let _ = sender.send(UsageSnapshot::auth_expired());
+                telemetry.record_app_error("usage", "unauthorized");
+                let _ = sender.send(UsageSnapshot::auth_expired_with(
+                    "Claude rejected the token (401) — sign in to Claude Code again",
+                ));
                 sleep(Duration::from_secs(AUTH_RETRY_SECS)).await;
                 continue;
             }
@@ -313,6 +333,8 @@ pub async fn run(
                     "Usage fetch error (attempt {}): {}",
                     consecutive_errors, e
                 );
+                // The error text can name hosts and paths; only the class is sent.
+                telemetry.record_app_error("usage", "fetch_error");
 
                 current_interval = POLL_ERROR;
 
@@ -338,6 +360,7 @@ pub async fn run(
                         status: SourceStatus::Degraded,
                         fetched_at: Utc::now(),
                         next_poll_in: POLL_ERROR,
+                        diagnostic: None,
                     };
                     {
                         let mut s = state.lock().unwrap();
