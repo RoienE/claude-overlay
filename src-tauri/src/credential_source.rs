@@ -129,31 +129,50 @@ pub fn parse_credentials_json(json: &str, source: &str) -> Result<ResolvedCreden
 /// Returns `Err` only for unexpected / programmer errors that warrant logging.
 #[cfg(target_os = "macos")]
 fn read_keychain_json() -> Result<Option<String>> {
-    use security_framework::passwords::get_generic_password;
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 
-    match get_generic_password(KEYCHAIN_SERVICE, "") {
-        Ok(bytes) => {
-            let json = String::from_utf8(bytes)
-                .context("Keychain credential bytes are not valid UTF-8")?;
-            let trimmed = json.trim().to_owned();
-            if trimmed.is_empty() {
-                log::warn!("Keychain item for '{}' is empty", KEYCHAIN_SERVICE);
-                Ok(None)
-            } else {
-                Ok(Some(trimmed))
-            }
-        }
+    // Query by service only — deliberately NOT constraining `kSecAttrAccount`.
+    // Claude Code stores the item under the macOS username, while
+    // `passwords::get_generic_password` always pins `kSecAttrAccount`, so an empty
+    // account string matches nothing (the empty string is a literal, not a wildcard).
+    // This mirrors `security find-generic-password -s "Claude Code-credentials" -w`,
+    // and still matches an item written with an empty account.
+    let results = match ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(KEYCHAIN_SERVICE)
+        .load_data(true)
+        .limit(Limit::Max(1))
+        .search()
+    {
+        Ok(results) => results,
         Err(e) => {
             // errSecItemNotFound (-25300) and errSecUserCanceled (-128) / access-denied
             // are both "not available right now" — log at debug and return None so the
             // caller degrades gracefully to AuthExpired.
             log::debug!(
-                "Keychain lookup for '{}' returned no item: {}",
+                "Keychain lookup for service '{}' returned no item: {}",
                 KEYCHAIN_SERVICE,
                 e
             );
-            Ok(None)
+            return Ok(None);
         }
+    };
+
+    let Some(bytes) = results.into_iter().find_map(|result| match result {
+        SearchResult::Data(bytes) => Some(bytes),
+        _ => None,
+    }) else {
+        log::warn!("Keychain item for '{}' returned no data", KEYCHAIN_SERVICE);
+        return Ok(None);
+    };
+
+    let json = String::from_utf8(bytes).context("Keychain credential bytes are not valid UTF-8")?;
+    let trimmed = json.trim().to_owned();
+    if trimmed.is_empty() {
+        log::warn!("Keychain item for '{}' is empty", KEYCHAIN_SERVICE);
+        Ok(None)
+    } else {
+        Ok(Some(trimmed))
     }
 }
 
@@ -168,9 +187,22 @@ pub fn read_credentials() -> Result<ResolvedCredentials> {
     // --- File path (all platforms) ---
     if let Some(path) = credentials_path() {
         log::debug!("Reading credentials from file: {}", path.display());
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read credentials file: {}", path.display()))?;
-        return parse_credentials_json(&raw, &path.display().to_string());
+        let from_file = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read credentials file: {}", path.display()))
+            .and_then(|raw| parse_credentials_json(&raw, &path.display().to_string()));
+
+        match from_file {
+            Ok(creds) => return Ok(creds),
+            // On macOS a stale or malformed file must not shadow the Keychain, which
+            // is the normal install's credential store — fall through to it instead.
+            #[cfg(target_os = "macos")]
+            Err(e) => log::warn!(
+                "Credentials file {} unusable ({e}); falling back to the Keychain",
+                path.display()
+            ),
+            #[cfg(not(target_os = "macos"))]
+            Err(e) => return Err(e),
+        }
     }
 
     // --- macOS Keychain fallback ---
