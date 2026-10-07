@@ -93,8 +93,18 @@ Pick the package that fits your distro:
 
 ## First Run & Usage
 
-The app reads Claude Code's OAuth token automatically. If Claude Code is installed and logged
-in, the widget shows your live usage with no configuration.
+The app reads your Claude login automatically — from **Claude Code** first, and from the
+**Claude Desktop** app if no usable Claude Code login is found. If either is signed in, the
+widget shows your live usage with no configuration. There is no setting to choose a source: a
+valid Claude Code login always wins.
+
+**Claude Desktop** keeps its sign-in in an encrypted token cache in its own data folder
+(`config.json`: `%APPDATA%\Claude` on Windows, `~/Library/Application Support/Claude` on macOS,
+`~/.config/Claude` on Linux; set `CLAUDE_DESKTOP_DIR` to point elsewhere). The app decrypts it
+read-only, using the key that Windows (DPAPI), the macOS Keychain (`Claude Safe Storage`) or the Linux
+keyring (`secret-tool`; without a keyring Chromium's built-in fallback key is used) keep for
+Claude Desktop. It never uses the refresh token and never writes to Claude Desktop's files, so an
+expired token simply waits until Claude Desktop renews it.
 
 ### Windows
 
@@ -110,6 +120,12 @@ The read goes through Apple's `security` tool first (`security find-generic-pass
 Code and normally does not include this app; if that is unavailable the app falls back to an
 in-process Keychain read, which may show a one-time "allow access" prompt — click **Allow**.
 The app never writes to or modifies the Keychain item.
+
+**Claude Desktop (macOS):** if you sign in through the Claude Desktop app instead of Claude
+Code, the overlay shows a short notice first, then macOS asks to let it access **Claude Safe
+Storage** — the key that protects Claude Desktop's login. Choose **Continue**, then **Always
+Allow** in the macOS prompt to avoid being asked again. Choosing **Not now** skips Claude
+Desktop until you restart the overlay. The notice never appears if you use Claude Code only.
 
 If you have a `~/.claude/.credentials.json` file (e.g. from an SSH/headless setup), the app
 tries that file first. A file that is missing, malformed, **or holds an expired token** does
@@ -137,6 +153,11 @@ Keychain read that includes the `OSStatus` (`-25300` = item not found, `-25293` 
 Claude Code uses on Linux). No configuration needed — if Claude Code is logged in, the
 widget shows your live usage. If Claude Code uses a non-default config directory, set
 `CLAUDE_CONFIG_DIR` before launching and the app will follow it.
+
+**Claude Desktop (Linux):** if no Claude Code login exists, the app reads Claude Desktop's login
+from `~/.config/Claude` (or `$XDG_CONFIG_HOME/Claude`). Its key comes from the Secret Service
+keyring through the `secret-tool` command (package `libsecret-tools`); with no keyring Chromium's
+built-in fallback key is used. KWallet-only systems without a Secret Service are not supported.
 
 **Runtime caveats on Linux:**
 
@@ -195,15 +216,18 @@ These are the same endpoints that Claude Code and the claude.ai dashboard use in
 **They are not part of any public Anthropic API contract** and may change, break, or be
 rate-limited without notice.
 
-Additionally, the app **reads the OAuth access token from Claude Code's credential store**:
+Additionally, the app **reads the OAuth access token from Claude Code's credential store**
+(and, if there is none, from Claude Desktop's encrypted token cache; see Credentials above):
 on Windows and Linux this is `~/.claude/.credentials.json`; on macOS this is the **macOS
 Keychain** (service name `Claude Code-credentials`), with the file as a fallback. This is
 intentional, read-only, and mirrors data you already own and can see in Claude Code's `/usage`
-command — but it constitutes access to another application's stored credentials.
+command — but it constitutes access to another application's stored credentials. For Claude
+Desktop that includes reading the key that protects its login (DPAPI, the macOS Keychain item
+`Claude Safe Storage`, or the Linux keyring); on macOS you are asked first.
 
 **What this app does NOT do:**
 - Consume inference tokens (all calls are metadata/quota checks)
-- Write to or modify the credentials file or Keychain item
+- Write to or modify any credential file, Keychain item or Claude Desktop file, or use a refresh token
 - Store, transmit, or share your credentials or usage data
 
 **Risk assessment:** The design is deliberately isolated (one swappable `usage_client` module)

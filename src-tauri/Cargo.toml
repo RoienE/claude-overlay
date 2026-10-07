@@ -33,9 +33,15 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 log = "0.4"
 uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+aes-gcm = "0.10"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = { version = "0.12", features = ["hmac"] }
+sha1 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "wtsapi32", "sysinfoapi"] }
+winapi = { version = "0.3", features = ["winuser", "wtsapi32", "sysinfoapi", "dpapi", "wincrypt", "winbase"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # OSX_10_15 enables kSecUseDataProtectionKeychain, which the data-protection

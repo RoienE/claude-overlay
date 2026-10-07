@@ -122,6 +122,13 @@ fn scoped_weekly_windows_from_limits(entries: &[serde_json::Value]) -> Vec<Quota
         .collect()
 }
 
+/// Statuses that mean "this token is not accepted": 401, and 403 — a dead Claude
+/// Desktop grant answers 403 rather than 401. Both go down the rejected-token path
+/// instead of being reported as a network error.
+fn is_auth_rejection(status: StatusCode) -> bool {
+    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+}
+
 /// Fetch and parse /api/oauth/usage.
 pub async fn fetch_usage(
     client: &Client,
@@ -136,7 +143,8 @@ pub async fn fetch_usage(
 
     let status = response.status();
     match status {
-        StatusCode::UNAUTHORIZED => return ApiResult::Unauthorized,
+        // 403 too: a stale Claude Desktop grant (no `user:profile` scope) answers 403.
+        s if is_auth_rejection(s) => return ApiResult::Unauthorized,
         StatusCode::TOO_MANY_REQUESTS => return ApiResult::RateLimited,
         s if s.is_server_error() => {
             return ApiResult::NetworkError(format!("Server error: {}", s));
@@ -268,7 +276,8 @@ pub async fn fetch_profile(client: &Client, token: &str) -> ApiResult<Profile> {
 
     let status = response.status();
     match status {
-        StatusCode::UNAUTHORIZED => return ApiResult::Unauthorized,
+        // 403 too: a stale Claude Desktop grant (no `user:profile` scope) answers 403.
+        s if is_auth_rejection(s) => return ApiResult::Unauthorized,
         StatusCode::TOO_MANY_REQUESTS => return ApiResult::RateLimited,
         s if s.is_server_error() => {
             return ApiResult::NetworkError(format!("Server error: {}", s));
@@ -335,6 +344,15 @@ impl Default for crate::model::RawProfileOrganization {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forbidden_and_unauthorized_are_auth_rejections() {
+        assert!(is_auth_rejection(StatusCode::UNAUTHORIZED));
+        assert!(is_auth_rejection(StatusCode::FORBIDDEN));
+        assert!(!is_auth_rejection(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_auth_rejection(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!is_auth_rejection(StatusCode::OK));
+    }
 
     /// Shape observed live from /api/oauth/usage once a per-model weekly cap
     /// ("Fable") is active: a "weekly_scoped" entry alongside the "session"

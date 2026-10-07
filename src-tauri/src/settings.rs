@@ -49,6 +49,12 @@ pub struct Settings {
     /// Generated once by `ensure_install_id` and persisted thereafter.
     #[serde(default)]
     pub install_id: Option<String>,
+
+    /// Whether the user has seen the macOS notice that precedes the `Claude Safe
+    /// Storage` Keychain prompt (shown before the first Claude Desktop key read).
+    /// Absent in older settings files → `false`.
+    #[serde(default)]
+    pub desktop_keychain_notice_ack: bool,
 }
 
 fn default_opacity() -> f32 {
@@ -76,6 +82,7 @@ impl Default for Settings {
             history_threshold_mins: default_history_threshold_mins(),
             telemetry_enabled: default_telemetry_enabled(),
             install_id: None,
+            desktop_keychain_notice_ack: false,
         }
     }
 }
@@ -437,5 +444,23 @@ mod tests {
             s1.install_id, s2.install_id,
             "two separate installs must get distinct IDs"
         );
+    }
+
+    // ── desktop_keychain_notice_ack ───────────────────────────────────────────
+
+    #[test]
+    fn old_settings_file_without_notice_ack_still_loads() {
+        let old = r#"{ "opacity": 0.8, "size_preset": "large", "telemetry_enabled": false }"#;
+        let s: Settings = serde_json::from_str(old).expect("old file must still deserialize");
+        assert!(!s.desktop_keychain_notice_ack);
+        assert!((s.opacity - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn notice_ack_round_trips() {
+        let s = Settings { desktop_keychain_notice_ack: true, ..Settings::default() };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert!(back.desktop_keychain_notice_ack);
     }
 }

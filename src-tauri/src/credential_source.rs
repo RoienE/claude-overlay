@@ -1,19 +1,20 @@
-//! Reads the Claude Code OAuth credentials (read-only).
+//! Reads the Claude OAuth credentials (read-only).
 //!
-//! Resolution order on **Windows / Linux**:
-//!   1. `$CLAUDE_CONFIG_DIR/.credentials.json`  (if env var is set)
-//!   2. `$USERPROFILE\.claude\.credentials.json`  (Windows default)
-//!   3. `$HOME/.claude/.credentials.json`          (Linux fallback)
-//!
-//! Resolution order on **macOS**:
-//!   1. `$CLAUDE_CONFIG_DIR/.credentials.json`  (if env var is set)
-//!   2. `$HOME/.claude/.credentials.json`          (file fallback for SSH-style installs)
-//!   3. macOS Keychain — generic password, service `Claude Code-credentials`
+//! Resolution order, first source with a **fresh** token wins:
+//!   1. `$CLAUDE_CONFIG_DIR/.credentials.json`, else `~/.claude/.credentials.json`
+//!      (Claude Code CLI login; `%USERPROFILE%` on Windows, `$HOME` elsewhere)
+//!   2. **macOS only:** Keychain — generic password, service `Claude Code-credentials`
 //!      (normal Claude Code macOS install stores the token here, not in a file)
+//!   3. Claude Desktop's own login (see `desktop_credentials`): the encrypted token
+//!      cache in its `config.json`. The CLI login always wins; there is deliberately
+//!      no setting to pick a source.
 //!
-//! A file whose token is **expired** does not end the search on macOS: the Keychain
-//! is the store Claude Code refreshes, so a stale file must not pin the app to an
-//! expired token. The file's token is only used if no fresher source turns up.
+//! A source whose token is **expired**, missing or unparsable never ends the search:
+//! the next source gets its turn (on macOS the Keychain is the store Claude Code
+//! refreshes, so a stale file must not pin the app to an expired token). If every
+//! token found is expired, the one that expires latest is returned, so the poller
+//! still reports `AuthExpired`. A machine without Claude Desktop records no Desktop
+//! attempt at all, so CLI-only users keep their existing diagnostics.
 //!
 //! The Keychain is read three ways, in order (see `read_keychain_json`):
 //!   a. `/usr/bin/security find-generic-password` — the item's ACL is created by
@@ -28,15 +29,23 @@
 //! Every failed attempt is recorded as a [`CredentialFailure`] carrying a closed
 //! vocabulary of stage/reason codes plus the raw `OSStatus` or exit code. That split
 //! is deliberate: raw OS error text embeds home-directory paths and account names, so
-//! it goes to the local log but **never** to telemetry — only the codes travel.
+//! it goes to the local log but **never** to telemetry — only the codes travel. No log
+//! line, error or test output ever carries a token, password or key.
 
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{CLAUDE_CONFIG_DIR_ENV, CLAUDE_DIR_NAME, CREDENTIALS_FILENAME};
+use crate::desktop_credentials::{self, KeyProvider, Os, SystemKeys};
+
+/// Asked right before the first read of another app's secret (macOS: the
+/// `Claude Safe Storage` Keychain item). Returns `false` when the user declined, which
+/// skips that source. Shared with the poller's blocking task, hence `Send + Sync`.
+pub type ConsentGate = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Service name used by Claude Code when writing to the macOS Keychain.
 #[cfg(target_os = "macos")]
@@ -83,6 +92,16 @@ pub enum CredentialStage {
     KeychainLegacy,
     /// In-process Keychain read against the data-protection keychain.
     KeychainDataProtection,
+    /// Reading Claude Desktop's `config.json`.
+    DesktopRead,
+    /// Getting the key that protects Claude Desktop's token cache.
+    DesktopKey,
+    /// Decrypting Claude Desktop's token cache.
+    DesktopDecrypt,
+    /// Parsing the decrypted Claude Desktop token cache.
+    DesktopParse,
+    /// Claude Desktop's token parsed, but it is already expired.
+    DesktopExpired,
     /// No credential source exists at all.
     NoSource,
 }
@@ -97,6 +116,11 @@ impl CredentialStage {
             Self::KeychainCli => "keychain_cli",
             Self::KeychainLegacy => "keychain_legacy",
             Self::KeychainDataProtection => "keychain_data_protection",
+            Self::DesktopRead => "desktop_read",
+            Self::DesktopKey => "desktop_key",
+            Self::DesktopDecrypt => "desktop_decrypt",
+            Self::DesktopParse => "desktop_parse",
+            Self::DesktopExpired => "desktop_expired",
             Self::NoSource => "no_source",
         }
     }
@@ -108,6 +132,11 @@ impl CredentialStage {
             Self::KeychainCli => "Keychain (security tool)",
             Self::KeychainLegacy => "Keychain",
             Self::KeychainDataProtection => "Keychain (data protection)",
+            Self::DesktopRead
+            | Self::DesktopDecrypt
+            | Self::DesktopParse
+            | Self::DesktopExpired => "Claude Desktop login",
+            Self::DesktopKey => "Claude Desktop key",
             Self::NoSource => "Credentials",
         }
     }
@@ -149,6 +178,12 @@ pub enum CredentialReason {
     EmptyToken,
     /// The token parsed fine but its expiry has passed.
     Expired,
+    /// The encrypted blob did not decrypt (wrong or rotated key, corrupt data).
+    DecryptFailed,
+    /// The blob uses an encryption scheme this build does not implement.
+    UnsupportedFormat,
+    /// The user declined the notice shown before reading another app's secret.
+    Skipped,
     /// An I/O error that is none of the above.
     Unreadable,
     /// Anything we could not classify.
@@ -171,8 +206,20 @@ impl CredentialReason {
             Self::MissingToken => "missing_token",
             Self::EmptyToken => "empty_token",
             Self::Expired => "expired",
+            Self::DecryptFailed => "decrypt_failed",
+            Self::UnsupportedFormat => "unsupported_format",
+            Self::Skipped => "skipped",
             Self::Unreadable => "unreadable",
             Self::Unknown => "unknown",
+        }
+    }
+
+    /// Classify a file-system error without ever keeping its text (which embeds paths).
+    pub(crate) fn from_io_kind(kind: std::io::ErrorKind) -> Self {
+        match kind {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            _ => Self::Unreadable,
         }
     }
 
@@ -191,6 +238,9 @@ impl CredentialReason {
             Self::MissingToken => "is missing accessToken",
             Self::EmptyToken => "has an empty accessToken",
             Self::Expired => "token has expired",
+            Self::DecryptFailed => "could not be decrypted",
+            Self::UnsupportedFormat => "uses an unsupported encryption format",
+            Self::Skipped => "skipped (restart the overlay to be asked again)",
             Self::Unreadable => "could not be read",
             Self::Unknown => "failed for an unknown reason",
         }
@@ -364,20 +414,23 @@ pub fn parse_classified(json: &str) -> std::result::Result<ResolvedCredentials, 
         return Err(CredentialReason::EmptyToken);
     }
 
-    let is_expired = oauth.expires_at.is_some_and(|exp| {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        now_ms > exp
-    });
-
     Ok(ResolvedCredentials {
         access_token,
         expires_at_ms: oauth.expires_at,
         subscription_type: oauth.subscription_type,
         rate_limit_tier: oauth.rate_limit_tier,
-        is_expired,
+        is_expired: is_expired(oauth.expires_at),
+    })
+}
+
+/// Whether an epoch-millisecond expiry has passed. No expiry means "not expired".
+pub(crate) fn is_expired(expires_at_ms: Option<i64>) -> bool {
+    expires_at_ms.is_some_and(|exp| {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        now_ms > exp
     })
 }
 
@@ -448,20 +501,35 @@ fn read_keychain_json(attempts: &mut Vec<CredentialFailure>) -> Option<String> {
     None
 }
 
-/// Read the Keychain item by shelling out to Apple's `security` binary.
-///
-/// Read-only (`find-generic-password`), never writes or modifies the item. The
-/// secret arrives on stdout — never via argv — and is never logged.
+/// Read the Claude Code Keychain item via the `security` binary.
 #[cfg(target_os = "macos")]
 fn keychain_via_cli() -> std::result::Result<String, CredentialFailure> {
+    security_find_password(
+        KEYCHAIN_SERVICE,
+        CredentialStage::KeychainCli,
+        KEYCHAIN_CLI_TIMEOUT_SECS,
+    )
+}
+
+/// Read a generic-password item by service name by shelling out to Apple's `security`
+/// binary.
+///
+/// Read-only (`find-generic-password`), never writes or modifies the item. The
+/// secret arrives on stdout — never via argv — and is never logged. `stage` labels
+/// any failure; `timeout_secs` bounds the wait (the Claude Desktop read allows longer
+/// than the CLI one, because there the user is expected to answer a prompt).
+#[cfg(target_os = "macos")]
+pub(crate) fn security_find_password(
+    service: &str,
+    stage: CredentialStage,
+    timeout_secs: u64,
+) -> std::result::Result<String, CredentialFailure> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    let stage = CredentialStage::KeychainCli;
-
     let mut child = match Command::new(SECURITY_CLI)
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .args(["find-generic-password", "-s", service, "-w"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -481,7 +549,7 @@ fn keychain_via_cli() -> std::result::Result<String, CredentialFailure> {
     // macOS 26 (Tahoe) can leave `security` blocked on a SecurityAgent prompt that
     // never appears. Bound the wait and kill it, so a wedged Keychain cannot stall
     // the poller — the in-process mechanisms still get their turn afterwards.
-    let deadline = Instant::now() + Duration::from_secs(KEYCHAIN_CLI_TIMEOUT_SECS);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -489,7 +557,7 @@ fn keychain_via_cli() -> std::result::Result<String, CredentialFailure> {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    log::warn!("{SECURITY_CLI} timed out after {KEYCHAIN_CLI_TIMEOUT_SECS}s");
+                    log::warn!("{SECURITY_CLI} timed out after {timeout_secs}s");
                     return Err(CredentialFailure::new(stage, CredentialReason::Timeout));
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -529,7 +597,7 @@ fn keychain_via_cli() -> std::result::Result<String, CredentialFailure> {
 
     let trimmed = secret.trim();
     if trimmed.is_empty() {
-        log::warn!("{SECURITY_CLI} returned an empty secret for '{KEYCHAIN_SERVICE}'");
+        log::warn!("{SECURITY_CLI} returned an empty secret for '{service}'");
         return Err(CredentialFailure::new(stage, CredentialReason::NotFound));
     }
 
@@ -611,25 +679,44 @@ fn keychain_via_framework(stage: CredentialStage) -> std::result::Result<String,
 
 // ── Resolution ────────────────────────────────────────────────────────────────
 
-/// Read and parse the credentials.
-///
-/// On Windows / Linux: the credentials file only.
-/// On macOS: the credentials file first (SSH-style fallback), then the Keychain.
-///
-/// On failure returns the full trail of attempts, so the caller can log it locally,
-/// show the deepest reason in the UI and report the codes to telemetry.
-pub fn read_credentials() -> std::result::Result<ResolvedCredentials, CredentialError> {
+/// Where each credential source lives. Injectable so tests drive the real resolution
+/// logic against temp dirs and fake keys, never the user's own files or Keychain.
+pub(crate) struct Sources<'a> {
+    /// The Claude Code CLI credentials file, if one exists.
+    pub cli_file: Option<PathBuf>,
+    /// macOS Keychain reader: returns the raw JSON and records its own failures.
+    pub keychain: &'a dyn Fn(&mut Vec<CredentialFailure>) -> Option<String>,
+    /// Claude Desktop's data folder, if it is installed.
+    pub desktop_dir: Option<PathBuf>,
+    /// Supplies the key that protects Claude Desktop's token cache.
+    pub desktop_keys: &'a dyn KeyProvider,
+}
+
+/// Keep whichever expired token expires latest: if nothing fresh turns up it is the
+/// closest to being valid, and it is what the poller reports as `AuthExpired`.
+fn keep_latest_expiry(slot: &mut Option<ResolvedCredentials>, candidate: ResolvedCredentials) {
+    let candidate_wins = match slot {
+        Some(current) => candidate.expires_at_ms > current.expires_at_ms,
+        None => true,
+    };
+    if candidate_wins {
+        *slot = Some(candidate);
+    }
+}
+
+/// Walk the sources in order; see the module header for the contract.
+pub(crate) fn resolve(sources: &Sources) -> std::result::Result<ResolvedCredentials, CredentialError> {
     let mut attempts: Vec<CredentialFailure> = Vec::new();
 
-    // A token that parsed but is already expired. Held back so a fresher source gets
-    // a chance first; returned unchanged if none is found (the poller turns it into
-    // the same AuthExpired state it always did).
+    // Tokens that parsed but are already expired. Held back so a fresher source gets a
+    // chance first; the latest-expiring one is returned if none is found (the poller
+    // turns it into the same AuthExpired state it always did).
     let mut stale_creds: Option<ResolvedCredentials> = None;
 
-    // --- File path (all platforms) ---
-    if let Some(path) = credentials_path() {
+    // --- CLI credentials file (all platforms) ---
+    if let Some(path) = &sources.cli_file {
         log::debug!("Reading credentials from file: {}", path.display());
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(raw) => match parse_classified(&raw) {
                 Ok(creds) if !creds.is_expired => return Ok(creds),
                 Ok(creds) => {
@@ -641,59 +728,68 @@ pub fn read_credentials() -> std::result::Result<ResolvedCredentials, Credential
                         CredentialStage::FileExpired,
                         CredentialReason::Expired,
                     ));
-                    stale_creds = Some(creds);
+                    keep_latest_expiry(&mut stale_creds, creds);
                 }
                 Err(reason) => {
-                    // On macOS a malformed file must not shadow the Keychain, which is
-                    // the normal install's credential store — fall through to it.
+                    // A malformed file must not shadow the other sources (the Keychain
+                    // on macOS, Claude Desktop everywhere).
                     log::warn!(
                         "Credentials file {} unusable: {}",
                         path.display(),
                         reason.as_str()
                     );
                     attempts.push(CredentialFailure::new(CredentialStage::FileParse, reason));
-                    #[cfg(not(target_os = "macos"))]
-                    return Err(CredentialError { attempts });
                 }
             },
             Err(e) => {
-                let reason = match e.kind() {
-                    std::io::ErrorKind::NotFound => CredentialReason::NotFound,
-                    std::io::ErrorKind::PermissionDenied => CredentialReason::PermissionDenied,
-                    _ => CredentialReason::Unreadable,
-                };
+                let reason = CredentialReason::from_io_kind(e.kind());
                 log::warn!("Failed to read credentials file {}: {e}", path.display());
                 attempts.push(CredentialFailure::new(CredentialStage::FileRead, reason));
-                #[cfg(not(target_os = "macos"))]
-                return Err(CredentialError { attempts });
             }
         }
     }
 
-    // --- macOS Keychain fallback ---
-    #[cfg(target_os = "macos")]
-    {
-        log::debug!("Trying Keychain service '{}'", KEYCHAIN_SERVICE);
-        if let Some(json) = read_keychain_json(&mut attempts) {
-            match parse_classified(&json) {
-                Ok(creds) if !creds.is_expired => return Ok(creds),
-                Ok(creds) => {
-                    log::warn!("Keychain token is expired");
-                    attempts.push(CredentialFailure::new(
-                        CredentialStage::KeychainLegacy,
-                        CredentialReason::Expired,
-                    ));
-                    // A live-but-expired Keychain token still beats a stale file one.
-                    stale_creds = Some(creds);
-                }
-                Err(reason) => {
-                    log::warn!("Keychain credentials unusable: {}", reason.as_str());
-                    attempts.push(CredentialFailure::new(
-                        CredentialStage::KeychainLegacy,
-                        reason,
-                    ));
-                }
+    // --- macOS Keychain (the reader is a no-op elsewhere) ---
+    if let Some(json) = (sources.keychain)(&mut attempts) {
+        match parse_classified(&json) {
+            Ok(creds) if !creds.is_expired => return Ok(creds),
+            Ok(creds) => {
+                log::warn!("Keychain token is expired");
+                attempts.push(CredentialFailure::new(
+                    CredentialStage::KeychainLegacy,
+                    CredentialReason::Expired,
+                ));
+                // A live-but-expired Keychain token still beats a stale file one.
+                keep_latest_expiry(&mut stale_creds, creds);
             }
+            Err(reason) => {
+                log::warn!("Keychain credentials unusable: {}", reason.as_str());
+                attempts.push(CredentialFailure::new(
+                    CredentialStage::KeychainLegacy,
+                    reason,
+                ));
+            }
+        }
+    }
+
+    // --- Claude Desktop (last: the CLI login always wins) ---
+    if let Some(dir) = &sources.desktop_dir {
+        if let Some(creds) = desktop_credentials::read_from_dir(
+            dir,
+            Os::current(),
+            sources.desktop_keys,
+            &mut attempts,
+        ) {
+            if !creds.is_expired {
+                log::info!("Using the Claude Desktop login");
+                return Ok(creds);
+            }
+            log::warn!("Claude Desktop token is expired; waiting for Desktop to refresh it");
+            attempts.push(CredentialFailure::new(
+                CredentialStage::DesktopExpired,
+                CredentialReason::Expired,
+            ));
+            keep_latest_expiry(&mut stale_creds, creds);
         }
     }
 
@@ -710,10 +806,42 @@ pub fn read_credentials() -> std::result::Result<ResolvedCredentials, Credential
 
     let error = CredentialError { attempts };
     log::warn!(
-        "Claude credentials not found. Is Claude Code installed and logged in? Attempts: {error}"
+        "Claude credentials not found. Is Claude Code or Claude Desktop installed and logged in? Attempts: {error}"
     );
 
     Err(error)
+}
+
+/// The macOS Keychain source for the real app.
+#[cfg(target_os = "macos")]
+fn read_system_keychain(attempts: &mut Vec<CredentialFailure>) -> Option<String> {
+    log::debug!("Trying Keychain service '{}'", KEYCHAIN_SERVICE);
+    read_keychain_json(attempts)
+}
+
+/// Read and parse the credentials.
+///
+/// Order: CLI file, then (macOS) the CLI Keychain item, then Claude Desktop. `gate` is
+/// asked before the one read that makes macOS show a Keychain prompt (Claude Desktop's
+/// `Claude Safe Storage` key); other platforms never call it.
+///
+/// On failure returns the full trail of attempts, so the caller can log it locally,
+/// show the deepest reason in the UI and report the codes to telemetry.
+pub fn read_credentials(gate: &dyn Fn() -> bool) -> std::result::Result<ResolvedCredentials, CredentialError> {
+    let desktop_dir = desktop_credentials::desktop_dir();
+    let keys = SystemKeys::new(desktop_dir.as_deref(), gate);
+
+    #[cfg(target_os = "macos")]
+    let keychain: &dyn Fn(&mut Vec<CredentialFailure>) -> Option<String> = &read_system_keychain;
+    #[cfg(not(target_os = "macos"))]
+    let keychain: &dyn Fn(&mut Vec<CredentialFailure>) -> Option<String> = &|_| None;
+
+    resolve(&Sources {
+        cli_file: credentials_path(),
+        keychain,
+        desktop_dir: desktop_dir.clone(),
+        desktop_keys: &keys,
+    })
 }
 
 #[cfg(test)]
@@ -891,6 +1019,11 @@ mod tests {
             CredentialStage::KeychainCli,
             CredentialStage::KeychainLegacy,
             CredentialStage::KeychainDataProtection,
+            CredentialStage::DesktopRead,
+            CredentialStage::DesktopKey,
+            CredentialStage::DesktopDecrypt,
+            CredentialStage::DesktopParse,
+            CredentialStage::DesktopExpired,
             CredentialStage::NoSource,
         ];
         let reasons = [
@@ -906,6 +1039,9 @@ mod tests {
             CredentialReason::MissingToken,
             CredentialReason::EmptyToken,
             CredentialReason::Expired,
+            CredentialReason::DecryptFailed,
+            CredentialReason::UnsupportedFormat,
+            CredentialReason::Skipped,
             CredentialReason::Unreadable,
             CredentialReason::Unknown,
         ];
@@ -960,5 +1096,165 @@ mod tests {
     fn credential_error_primary_never_panics_when_empty() {
         let error = CredentialError { attempts: vec![] };
         assert_eq!(error.primary().stage, CredentialStage::NoSource);
+    }
+
+    #[test]
+    fn desktop_failures_render_without_paths_or_secrets() {
+        let failure = CredentialFailure::new(CredentialStage::DesktopKey, CredentialReason::Skipped);
+        assert_eq!(
+            failure.to_string(),
+            "Claude Desktop key skipped (restart the overlay to be asked again)"
+        );
+        let failure =
+            CredentialFailure::new(CredentialStage::DesktopDecrypt, CredentialReason::DecryptFailed);
+        assert_eq!(failure.to_string(), "Claude Desktop login could not be decrypted");
+    }
+
+    // ── resolution order ───────────────────────────────────────────────────
+    //
+    // These drive `resolve` with temp dirs and a fake key provider, so they never read
+    // the real `~/.claude`, Claude Desktop folder, Keychain or environment.
+
+    mod resolution {
+        use super::*;
+        use crate::desktop_credentials::test_support::{encrypt_blob, FakeKeys, TEST_SECRET};
+        use std::path::Path;
+
+        const FAR_FUTURE_MS: i64 = 4_000_000_000_000;
+
+        fn unique_dir(label: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "claude-overlay-resolve-{label}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        fn write_cli_file(dir: &Path, token: &str, expires_at: i64) -> PathBuf {
+            let path = dir.join(CREDENTIALS_FILENAME);
+            std::fs::write(
+                &path,
+                format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}","expiresAt":{expires_at}}}}}"#),
+            )
+            .unwrap();
+            path
+        }
+
+        fn write_desktop(dir: &Path, token: &str, expires_at: i64) {
+            let cache = format!(
+                r#"{{"i:u::user:profile":{{"token":"{token}","expiresAt":{expires_at}}}}}"#
+            );
+            let config = serde_json::json!({
+                "oauth:tokenCacheV2": encrypt_blob(Os::current(), &TEST_SECRET, &cache)
+            });
+            std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+        }
+
+        fn run(
+            cli_file: Option<PathBuf>,
+            desktop_dir: Option<PathBuf>,
+        ) -> std::result::Result<ResolvedCredentials, CredentialError> {
+            let keys = FakeKeys::new(&TEST_SECRET);
+            resolve(&Sources {
+                cli_file,
+                keychain: &|_| None,
+                desktop_dir,
+                desktop_keys: &keys,
+            })
+        }
+
+        #[test]
+        fn missing_cli_file_falls_through_to_desktop() {
+            let desktop = unique_dir("fallthrough-desktop");
+            write_desktop(&desktop, "desktop-tok", FAR_FUTURE_MS);
+            let missing = unique_dir("fallthrough-cli").join("absent.json");
+
+            let creds = run(Some(missing), Some(desktop.clone())).unwrap();
+            assert_eq!(creds.access_token, "desktop-tok");
+            let _ = std::fs::remove_dir_all(&desktop);
+        }
+
+        #[test]
+        fn malformed_cli_file_falls_through_to_desktop() {
+            let cli_dir = unique_dir("malformed-cli");
+            let cli = cli_dir.join(CREDENTIALS_FILENAME);
+            std::fs::write(&cli, "{ nope").unwrap();
+            let desktop = unique_dir("malformed-desktop");
+            write_desktop(&desktop, "desktop-tok", FAR_FUTURE_MS);
+
+            let creds = run(Some(cli), Some(desktop.clone())).unwrap();
+            assert_eq!(creds.access_token, "desktop-tok");
+            let _ = std::fs::remove_dir_all(&desktop);
+            let _ = std::fs::remove_dir_all(&cli_dir);
+        }
+
+        #[test]
+        fn fresh_cli_token_beats_desktop() {
+            let cli_dir = unique_dir("cli-wins-cli");
+            let cli = write_cli_file(&cli_dir, "cli-tok", FAR_FUTURE_MS);
+            let desktop = unique_dir("cli-wins-desktop");
+            write_desktop(&desktop, "desktop-tok", FAR_FUTURE_MS);
+
+            let creds = run(Some(cli), Some(desktop.clone())).unwrap();
+            assert_eq!(creds.access_token, "cli-tok");
+            let _ = std::fs::remove_dir_all(&desktop);
+            let _ = std::fs::remove_dir_all(&cli_dir);
+        }
+
+        #[test]
+        fn expired_cli_token_loses_to_fresh_desktop_token() {
+            let cli_dir = unique_dir("expired-cli");
+            let cli = write_cli_file(&cli_dir, "cli-old", 1000);
+            let desktop = unique_dir("expired-desktop");
+            write_desktop(&desktop, "desktop-fresh", FAR_FUTURE_MS);
+
+            let creds = run(Some(cli), Some(desktop.clone())).unwrap();
+            assert_eq!(creds.access_token, "desktop-fresh");
+            assert!(!creds.is_expired);
+            let _ = std::fs::remove_dir_all(&desktop);
+            let _ = std::fs::remove_dir_all(&cli_dir);
+        }
+
+        #[test]
+        fn when_everything_is_expired_the_latest_expiry_is_returned() {
+            let cli_dir = unique_dir("all-expired-cli");
+            let cli = write_cli_file(&cli_dir, "cli-older", 1000);
+            let desktop = unique_dir("all-expired-desktop");
+            write_desktop(&desktop, "desktop-newer", 2000);
+
+            let creds = run(Some(cli), Some(desktop.clone())).unwrap();
+            assert!(creds.is_expired);
+            assert_eq!(creds.access_token, "desktop-newer");
+            let _ = std::fs::remove_dir_all(&desktop);
+            let _ = std::fs::remove_dir_all(&cli_dir);
+        }
+
+        #[test]
+        fn no_desktop_folder_records_no_desktop_attempt() {
+            let missing = unique_dir("no-desktop-cli").join("absent.json");
+            let error = run(Some(missing), None).unwrap_err();
+            assert_eq!(error.attempts.len(), 1);
+            assert_eq!(error.attempts[0].stage, CredentialStage::FileRead);
+            assert!(error
+                .attempts
+                .iter()
+                .all(|a| !a.stage.as_str().starts_with("desktop_")));
+
+            // With no source at all the trail is the NoSource marker, as before.
+            let error = run(None, None).unwrap_err();
+            assert_eq!(error.primary().stage, CredentialStage::NoSource);
+        }
+
+        #[test]
+        fn desktop_failure_is_the_primary_when_it_is_the_deepest() {
+            let desktop = unique_dir("desktop-fails");
+            // Folder exists but holds no config.json.
+            let error = run(None, Some(desktop.clone())).unwrap_err();
+            assert_eq!(error.primary().stage, CredentialStage::DesktopRead);
+            let _ = std::fs::remove_dir_all(&desktop);
+        }
     }
 }
