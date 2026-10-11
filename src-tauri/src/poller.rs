@@ -16,7 +16,10 @@ use crate::config::{
     AUTH_RETRY_SECS, FAST_EXTRA_COUNT, IDLE_PAUSE, MAX_BACKOFF, POLL_ERROR, POLL_FAST,
     POLL_FAST_EXTRA, POLL_INTERVAL, PROFILE_POLL_SECS,
 };
-use crate::credential_source::{read_credentials, CredentialReason, CredentialStage};
+use crate::credential_source::{
+    read_credentials, ConsentGate, CredentialError, CredentialFailure, CredentialReason,
+    CredentialStage,
+};
 use crate::fallback_logs;
 use crate::model::{ApiResult, Plan, Profile, SourceStatus, UsageSnapshot};
 use crate::plan_detector::{detect_from_profile, resolve_plan};
@@ -96,6 +99,7 @@ pub async fn run(
     state: SharedPollerState,
     notify: RefreshNotify,
     telemetry: Telemetry,
+    consent_gate: ConsentGate,
 ) {
     let client = match build_client() {
         Ok(c) => c,
@@ -157,7 +161,21 @@ pub async fn run(
         }
 
         // ── Read credentials ──────────────────────────────────────────────────
-        let credentials = match read_credentials() {
+        // Blocking on purpose: it reads files, spawns `security` / `secret-tool` and
+        // may wait on a dialog or a Keychain prompt, none of which may stall an async
+        // worker.
+        let gate = consent_gate.clone();
+        let read = tokio::task::spawn_blocking(move || read_credentials(&*gate)).await;
+        let credentials = match read.unwrap_or_else(|join_error| {
+            // A panic inside the reader. Report it as an unclassified failure.
+            error!("Credential read task failed: {join_error}");
+            Err(CredentialError {
+                attempts: vec![CredentialFailure::new(
+                    CredentialStage::NoSource,
+                    CredentialReason::Unknown,
+                )],
+            })
+        }) {
             Ok(c) => c,
             Err(e) => {
                 // The full trail goes to the local log; only the deepest failure's
@@ -185,7 +203,7 @@ pub async fn run(
                 None,
             );
             let _ = sender.send(UsageSnapshot::auth_expired_with(
-                "Token has expired — sign in to Claude Code again",
+                "Token has expired — sign in to Claude Code or Claude Desktop again",
             ));
             sleep(Duration::from_secs(AUTH_RETRY_SECS)).await;
             continue;
@@ -203,7 +221,7 @@ pub async fn run(
                     last_profile_fetch = std::time::Instant::now();
                 }
                 ApiResult::Unauthorized => {
-                    warn!("Profile fetch: 401 Unauthorized");
+                    warn!("Profile fetch: token rejected (401/403)");
                     telemetry.record_app_error("profile", "unauthorized");
                     // Don't stop usage polling; just skip profile
                 }
@@ -318,10 +336,10 @@ pub async fn run(
             }
 
             ApiResult::Unauthorized => {
-                warn!("Usage fetch: 401 Unauthorized — auth expired");
+                warn!("Usage fetch: token rejected (401/403) — auth expired");
                 telemetry.record_app_error("usage", "unauthorized");
                 let _ = sender.send(UsageSnapshot::auth_expired_with(
-                    "Claude rejected the token (401) — sign in to Claude Code again",
+                    "Claude rejected the token — sign in to Claude Code or Claude Desktop again",
                 ));
                 sleep(Duration::from_secs(AUTH_RETRY_SECS)).await;
                 continue;

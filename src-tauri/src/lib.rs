@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod credential_source;
+pub mod desktop_credentials;
 pub mod fallback_logs;
 pub mod model;
 pub mod plan_detector;
@@ -96,6 +97,62 @@ fn log_level_from_env() -> log::LevelFilter {
         .ok()
         .and_then(|raw| raw.trim().parse::<log::LevelFilter>().ok())
         .unwrap_or(log::LevelFilter::Info)
+}
+
+/// Notice shown before macOS asks to let the overlay read `Claude Safe Storage`.
+///
+/// Returns the consent gate the credential reader calls right before that Keychain
+/// read — which only happens when a Claude Desktop login actually exists and its key
+/// is not already cached, so a CLI-only user never sees it.
+///
+/// * **Continue** persists `desktop_keychain_notice_ack` (so later launches go straight
+///   to the system prompt) and proceeds.
+/// * **Not now** skips Claude Desktop for the rest of this run (in memory only), so the
+///   user is not nagged every poll; restarting the overlay asks again.
+///
+/// Runs on the poller's blocking thread, never the main thread, as the dialog requires.
+#[cfg(target_os = "macos")]
+fn desktop_keychain_gate(app: AppHandle) -> credential_source::ConsentGate {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let declined = Arc::new(AtomicBool::new(false));
+    Arc::new(move || {
+        if declined.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut saved = settings::load(&app);
+        if saved.desktop_keychain_notice_ack {
+            return true;
+        }
+
+        let accepted = app
+            .dialog()
+            .message(
+                "macOS will next ask whether to let Claude Overlay access \"Claude Safe \
+                 Storage\".\n\nThat is how the overlay reads your Claude Desktop sign-in to \
+                 show your usage. Access is read-only: the overlay never changes your login.\n\n\
+                 Choose \"Always Allow\" in the macOS prompt to avoid being asked again.",
+            )
+            .title("Read Claude Desktop login")
+            .kind(MessageDialogKind::Info)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Continue".to_owned(),
+                "Not now".to_owned(),
+            ))
+            .blocking_show();
+
+        if accepted {
+            saved.desktop_keychain_notice_ack = true;
+            if let Err(e) = settings::save(&app, &saved) {
+                log::warn!("Failed to persist the Keychain notice acknowledgement: {e}");
+            }
+        } else {
+            log::info!("Claude Desktop Keychain access postponed by the user");
+            declined.store(true, Ordering::Relaxed);
+        }
+        accepted
+    })
 }
 
 pub fn run() {
@@ -288,8 +345,22 @@ pub fn run() {
             let notify_for_poller = refresh_notify.clone();
             let telemetry_for_poller = telemetry.clone();
 
+            // Only macOS needs the notice (its Keychain prompt); elsewhere the gate
+            // is never consulted and always agrees.
+            #[cfg(target_os = "macos")]
+            let consent_gate = desktop_keychain_gate(app.handle().clone());
+            #[cfg(not(target_os = "macos"))]
+            let consent_gate: credential_source::ConsentGate = Arc::new(|| true);
+
             tauri::async_runtime::spawn(async move {
-                crate::poller::run(tx, state_for_poller, notify_for_poller, telemetry_for_poller).await;
+                crate::poller::run(
+                    tx,
+                    state_for_poller,
+                    notify_for_poller,
+                    telemetry_for_poller,
+                    consent_gate,
+                )
+                .await;
             });
 
             // ── Forward snapshots to the WebView as Tauri events ─────────────

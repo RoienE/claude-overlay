@@ -12,6 +12,8 @@ pub const REQUEST_TIMEOUT_SECS: u64 = 10;
 pub const CREDENTIALS_FILENAME: &str = ".credentials.json";
 pub const CLAUDE_DIR_NAME: &str = ".claude";
 pub const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+/// Optional override for the Claude Desktop data folder (mainly for tests / odd installs).
+pub const CLAUDE_DESKTOP_DIR_ENV: &str = "CLAUDE_DESKTOP_DIR";
 
 // ── Adaptive polling intervals (all in seconds) ──────────────────────────────
 /// Standard cadence when usage is steady.

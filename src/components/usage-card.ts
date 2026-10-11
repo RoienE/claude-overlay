@@ -168,7 +168,7 @@ export function renderSnapshot(card: HTMLElement, snap: UsageSnapshot): void {
     body.innerHTML = `
       <div class="state-message">
         <span class="icon">🔑</span>
-        <span>Sign in to Claude Code<br>to see usage data.</span>
+        <span>Sign in to Claude Code or<br>Claude Desktop to see usage data.</span>
         ${diagnostic}
       </div>`;
     footer.style.display = 'none';
