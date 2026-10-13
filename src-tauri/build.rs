@@ -21,6 +21,8 @@ fn generate_obfuscated_telemetry_secrets() {
     // footgun where a changed env var would otherwise reuse a stale artifact).
     println!("cargo:rerun-if-env-changed=TELEMETRY_ENDPOINT");
     println!("cargo:rerun-if-env-changed=TELEMETRY_API_KEY");
+    // Same option_env! caching footgun for plan_detector.rs's EXCLUDED_USAGE_KEYS.
+    println!("cargo:rerun-if-env-changed=EXCLUDED_USAGE_KEYS");
 
     let endpoint = env::var("TELEMETRY_ENDPOINT").ok().filter(|s| !s.is_empty());
     let api_key = env::var("TELEMETRY_API_KEY").ok().filter(|s| !s.is_empty());

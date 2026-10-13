@@ -46,6 +46,9 @@ concurrency:
 
 env:
   NODE_VERSION: "22"
+  # Comma-separated usage keys to exclude; compiled into the binary via
+  # option_env!; unset/blank -> the compiled-in default in plan_detector.rs.
+  EXCLUDED_USAGE_KEYS: ${{ vars.EXCLUDED_USAGE_KEYS }}
 
 jobs:
   # ── 1. Build the frontend bundle ONCE ─────────────────────────────────────
