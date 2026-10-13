@@ -7,6 +7,7 @@
 //!   4. Unknown
 
 use crate::model::{Plan, Profile, QuotaWindow};
+use std::sync::OnceLock;
 
 /// Map a known `rate_limit_tier` string to a `Plan`.
 /// Strings are undocumented; we map what is observed and fall back to `Plan::Max`.
@@ -110,8 +111,17 @@ pub fn resolve_plan(
     detect_from_windows(windows)
 }
 
-/// Raw `/api/oauth/usage` top-level keys that are NOT real quota windows and
-/// must be excluded at parse time so they never render as bars.
+/// Captured at compile time from the build environment (release CI sets it
+/// from the `EXCLUDED_USAGE_KEYS` repository variable; see
+/// `cargo:rerun-if-env-changed=EXCLUDED_USAGE_KEYS` in `build.rs`).
+const EXCLUDED_KEYS_ENV: Option<&str> = option_env!("EXCLUDED_USAGE_KEYS");
+
+/// Compiled-in fallback used when the env var is unset or blank at build time
+/// (local dev, `cargo test`, forks). A set, non-blank `EXCLUDED_USAGE_KEYS`
+/// REPLACES this list entirely — it is not merged with it. Keep this in sync
+/// with the repository variable's intended value when editing this file.
+///
+/// Raw `/api/oauth/usage` top-level keys, case-sensitive, comma-separated:
 ///
 /// `"limits"` — an array, not an object with `.utilization`, so it can never
 /// be parsed as a generic top-level window (it would render as a perpetual 0%
@@ -119,23 +129,69 @@ pub fn resolve_plan(
 /// which pulls the `kind: "weekly_scoped"` entries out of it (per-model
 /// weekly caps such as Fable) as their own `QuotaWindow`s; this exclusion
 /// only stops it from *also* being treated as a naive top-level window.
+/// Defensive: `usage_client.rs` already `continue`s this key before the
+/// exclusion check runs.
 ///
 /// `"spend"` — a spend-tracker object with no `.utilization` field; same
-/// symptom: perpetual 0% "Spend" bar, unrelated to quota windows.
+/// symptom: perpetual 0% "Spend" bar, unrelated to quota windows. Defensive:
+/// `usage_client.rs` already `continue`s this key before the exclusion check.
 ///
 /// `"member_dashboard_available"` — a bare boolean feature flag (whether the
 /// account can see the per-member usage dashboard on claude.ai), not a quota
-/// window; renders as a perpetual 0% "Member Dashboard Available" bar.
+/// window; this is the only one of the three the exclusion list alone hides.
 ///
-/// The list is intentionally a one-line-editable constant so it stays trivial
-/// to extend when Anthropic adds more non-window keys to the response.
-/// Keys are the exact raw API keys (case-sensitive); labels are NOT used here.
-pub const EXCLUDED_WINDOW_KEYS: &[&str] = &["limits", "spend", "member_dashboard_available"];
+/// `"iguana_necktie"`, `"seven_day_breakdown"`, `"weekly_scoped_shares"` —
+/// **NEW**, inferred from their humanized display labels (reverse of
+/// `label_for_key`'s fallback: lowercase, spaces → underscores).
+pub const DEFAULT_EXCLUDED_USAGE_KEYS: &str =
+    "limits,spend,member_dashboard_available,iguana_necktie,seven_day_breakdown,weekly_scoped_shares";
+
+/// Pick the raw excluded-keys string: the env value wins whenever it is
+/// `Some` and non-blank after trim; otherwise fall back to `default`. GitHub
+/// renders an unset `vars.*` as the empty string, so "not set" and "set
+/// blank" both land in the fallback by design.
+fn resolve_raw_excluded<'a>(env_value: Option<&'a str>, default: &'a str) -> &'a str {
+    match env_value {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => default,
+    }
+}
+
+/// Split a raw comma-separated key list into trimmed, non-empty entries.
+/// No case normalization — matching stays case-sensitive.
+pub fn parse_excluded_keys(raw: &str) -> Vec<&str> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Return `true` if `key` is present in `excluded` (case-sensitive, exactly
+/// like the old `EXCLUDED_WINDOW_KEYS.contains` behaviour).
+fn is_excluded_in(key: &str, excluded: &[&str]) -> bool {
+    excluded.contains(&key)
+}
+
+static EXCLUDED: OnceLock<Vec<&'static str>> = OnceLock::new();
+
+/// The effective excluded-key list for this build: the `EXCLUDED_USAGE_KEYS`
+/// build-time env var if set and non-blank, else `DEFAULT_EXCLUDED_USAGE_KEYS`.
+/// Parsed once and cached.
+fn excluded_window_keys() -> &'static [&'static str] {
+    EXCLUDED
+        .get_or_init(|| {
+            let raw = resolve_raw_excluded(EXCLUDED_KEYS_ENV, DEFAULT_EXCLUDED_USAGE_KEYS);
+            let keys = parse_excluded_keys(raw);
+            log::debug!("active excluded usage keys: {:?}", keys);
+            keys
+        })
+        .as_slice()
+}
 
 /// Return `true` if `key` is a known non-window key that must not be parsed
 /// into a `QuotaWindow`.  Applied at parse time in `usage_client.rs`.
 pub fn is_excluded_window_key(key: &str) -> bool {
-    EXCLUDED_WINDOW_KEYS.contains(&key)
+    is_excluded_in(key, excluded_window_keys())
 }
 
 /// Return a human-readable label for a raw quota window key.
@@ -258,29 +314,78 @@ mod tests {
         assert_eq!(label_for_key("seven_day_new_model"), "Seven Day New Model");
     }
 
+    // Exclusion tests below target the pure fns with explicit inputs, never
+    // the `OnceLock` static or `is_excluded_window_key`: `option_env!` captures
+    // the compile-time environment, so a static-based assertion would flip on
+    // any machine that happens to export EXCLUDED_USAGE_KEYS.
+
     #[test]
-    fn excluded_keys_are_listed() {
-        // Noise keys confirmed from live payload captures.
-        assert!(EXCLUDED_WINDOW_KEYS.contains(&"limits"));
-        assert!(EXCLUDED_WINDOW_KEYS.contains(&"spend"));
-        assert!(EXCLUDED_WINDOW_KEYS.contains(&"member_dashboard_available"));
+    fn parse_splits_on_commas() {
+        assert_eq!(parse_excluded_keys("a,b,c"), vec!["a", "b", "c"]);
     }
 
     #[test]
-    fn is_excluded_window_key_rejects_noise() {
-        assert!(is_excluded_window_key("limits"));
-        assert!(is_excluded_window_key("spend"));
-        assert!(is_excluded_window_key("member_dashboard_available"));
+    fn parse_trims_and_drops_empty() {
+        assert_eq!(parse_excluded_keys(" a , ,b,,c ,"), vec!["a", "b", "c"]);
     }
 
     #[test]
-    fn is_excluded_window_key_passes_real_windows() {
-        // Real quota windows must NOT be excluded.
-        assert!(!is_excluded_window_key("five_hour"));
-        assert!(!is_excluded_window_key("seven_day"));
-        assert!(!is_excluded_window_key("seven_day_sonnet"));
-        assert!(!is_excluded_window_key("seven_day_opus"));
-        assert!(!is_excluded_window_key("extra_usage"));
+    fn matching_is_case_sensitive() {
+        assert_eq!(parse_excluded_keys("Spend"), vec!["Spend"]);
+        assert!(!is_excluded_in("spend", &["Spend"]));
+    }
+
+    #[test]
+    fn default_list_is_exactly_the_six_keys() {
+        let mut got = parse_excluded_keys(DEFAULT_EXCLUDED_USAGE_KEYS);
+        let mut want = vec![
+            "limits",
+            "spend",
+            "member_dashboard_available",
+            "iguana_necktie",
+            "seven_day_breakdown",
+            "weekly_scoped_shares",
+        ];
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn env_overrides_default_and_blank_falls_back() {
+        let d = "d";
+        assert_eq!(resolve_raw_excluded(Some("x,y"), d), "x,y");
+        assert_eq!(resolve_raw_excluded(None, d), d);
+        assert_eq!(resolve_raw_excluded(Some(""), d), d);
+        assert_eq!(resolve_raw_excluded(Some("   "), d), d);
+    }
+
+    #[test]
+    fn is_excluded_in_rejects_noise_and_passes_real_windows() {
+        let excluded = parse_excluded_keys(DEFAULT_EXCLUDED_USAGE_KEYS);
+        for key in [
+            "limits",
+            "spend",
+            "member_dashboard_available",
+            "iguana_necktie",
+            "seven_day_breakdown",
+            "weekly_scoped_shares",
+        ] {
+            assert!(is_excluded_in(key, &excluded), "{key} should be excluded");
+        }
+        for key in [
+            "five_hour",
+            "seven_day",
+            "seven_day_sonnet",
+            "extra_usage",
+            "weekly_scoped_fable",
+            "zebra_hat",
+        ] {
+            assert!(
+                !is_excluded_in(key, &excluded),
+                "{key} must render, not be excluded"
+            );
+        }
     }
 
     #[test]

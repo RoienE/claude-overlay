@@ -137,7 +137,8 @@ Rust core (src-tauri/src/)
   credential_source.rs — read credentials: file on Windows/Linux; macOS Keychain fallback
   usage_client.rs      — GET /api/oauth/usage + /api/oauth/profile
   fallback_logs.rs     — aggregate ~/.claude/projects/**/*.jsonl
-  plan_detector.rs     — classify plan; label & sort quota windows
+  plan_detector.rs     — classify plan; label & sort quota windows; build-time
+                         configurable exclusion list
   poller.rs            — adaptive polling loop; emits UsageSnapshot events
   window_ctl.rs        — Tauri commands (opacity, size, show/hide, etc.)
   model.rs             — shared data types
@@ -154,6 +155,15 @@ WebView UI (src/)
     settings-panel.ts  — settings view (opacity, size, check for updates, quit)
     version-label.ts   — version badge in the overlay/settings footer
 ```
+
+**Usage-item exclusion list:** the keys hidden from the card (see README "Hiding unwanted
+usage items") are captured at compile time via `option_env!("EXCLUDED_USAGE_KEYS")` in
+`plan_detector.rs`. A blank or unset variable falls back to the compiled-in
+`DEFAULT_EXCLUDED_USAGE_KEYS` constant — keep that constant in sync with the repository
+variable's intended value when editing this file, since the two can drift. `build.rs` emits
+`cargo:rerun-if-env-changed=EXCLUDED_USAGE_KEYS` so a changed variable triggers a real rebuild
+instead of reusing a stale cached artifact (the same `option_env!` caching footgun the
+TELEMETRY_* constants already guard against).
 
 ---
 

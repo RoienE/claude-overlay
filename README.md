@@ -205,6 +205,30 @@ survives updates.
 
 ---
 
+## Hiding unwanted usage items
+
+A handful of raw API keys returned by `/api/oauth/usage` aren't real quota windows (feature
+flags, spend trackers) and are hidden from the card. The hidden list is controlled by the
+repository variable `EXCLUDED_USAGE_KEYS` — a comma-separated, case-sensitive list of raw
+top-level API keys (not their display labels) — read at build time, baked into each release.
+
+To hide a new unwanted item:
+
+1. Find its raw key from the label shown on the card: lowercase it and replace spaces with
+   underscores (e.g. "Seven Day Breakdown" → `seven_day_breakdown`).
+2. Append it to the variable: **Settings → Secrets and variables → Actions → Variables**, or
+   ```sh
+   gh variable set EXCLUDED_USAGE_KEYS --body "<comma-separated keys>"
+   ```
+3. Cut a new release: `pnpm run release patch`. Installed apps pick up the change on their
+   next auto-update.
+
+A set, non-blank variable **replaces** the built-in list entirely (it does not add to it).
+Local/fork builds, and `cargo test`, don't read the variable — they use the compiled-in
+default list in `src-tauri/src/plan_detector.rs` (`DEFAULT_EXCLUDED_USAGE_KEYS`).
+
+---
+
 ## ⚠ Disclaimer — Unofficial Endpoint / ToS Note
 
 **This application uses undocumented, unofficial Anthropic API endpoints:**
